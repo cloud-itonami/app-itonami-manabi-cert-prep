@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>manabi · 学習支援 bot</title>
+  <meta name="robots" content="noindex,nofollow">
+  <link rel="stylesheet" href="/calm.css">
+</head>
+<body>
+  <header class="calm-header">
+    <span class="title">manabi · cert prep</span>
+    <nav>
+      <a href="/index.html">home</a>
+      <a href="/domains.html">domains</a>
+      <a href="/history.html">history</a>
+    </nav>
+  </header>
+
+  <h1>学習支援 bot</h1>
+  <p>このアプリと組になっている Itonami の bot の状態を、この端末で確かめます。</p>
+
+  <div id="profile" class="calm-card"></div>
+
+  <p>
+    <button id="read-assignments" class="calm-button" type="button">bot の状態を取得</button>
+    <button id="read-activity" class="calm-button secondary" type="button" hidden>活動を取得</button>
+  </p>
+  <p class="calm-card-meta">接続先: https://bots.itonami.cloud — 取得のたびに確認画面が開きます。拒否すると何も送信しません。自動更新はしません。</p>
+  <p id="notice" role="status"></p>
+
+  <div class="calm-card">
+    <p class="calm-card-title">健康状態</p>
+    <div id="health"><p>まだ取得していません。</p></div>
+  </div>
+
+  <div id="events-card" class="calm-card" hidden>
+    <p class="calm-card-title">公開活動（新しい順、最大 20 件）</p>
+    <ol id="events"></ol>
+  </div>
+
+  <script type="module" src="/bot.js"></script>
+</body>
+</html>
