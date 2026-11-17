@@ -12,7 +12,7 @@ const here = fileURLToPath(new URL("../", import.meta.url));
 const fixture = () => {
   const dir = mkdtempSync(path.join(tmpdir(), "tauri-fixture-"));
   mkdirSync(path.join(dir, "in/sub"), { recursive: true });
-  writeFileSync(path.join(dir, "in/index.html"), '<!doctype html><html><head><style>a{}</style></head><body><a href="https://example.com/x" style="color:red">x</a><script src="/app.js"></script></body></html>');
+  writeFileSync(path.join(dir, "in/index.html"), '<!doctype html><html><head><style>a{}</style></head><body><nav></nav><a href="https://example.com/x" style="color:red">x</a><script src="/app.js"></script></body></html>');
   writeFileSync(path.join(dir, "in/sub/page.html"), "<html><head></head><body></body></html>");
   writeFileSync(path.join(dir, "in/app.js"), "");
   return { src: path.join(dir, "in"), out: path.join(dir, "out") };
@@ -33,7 +33,7 @@ test("build adds a per-page CSP derived from the descriptor and injects the host
     const csp = html.match(/Content-Security-Policy" content="([^"]+)"/)[1];
     assert.match(csp, /default-src 'none'/);
     assert.match(csp, /script-src 'self'(;|$)/);
-    assert.match(csp, /connect-src 'self' ipc: http:\/\/ipc\.localhost/);
+    assert.match(csp, /connect-src 'self' https:\/\/bots\.itonami\.cloud ipc: http:\/\/ipc\.localhost/);
     assert.doesNotMatch(csp, /'none' ipc/);
     assert.ok(html.includes('<script type="module" src="/host.js"></script>'));
   }

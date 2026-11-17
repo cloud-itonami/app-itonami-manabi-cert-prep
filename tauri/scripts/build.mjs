@@ -31,6 +31,19 @@ await cp(source, out, { recursive: true });
 await cp(path.join(here, "vendor/kotoba-client-runtime.js"), path.join(out, "runtime.js"));
 await cp(path.join(here, "vendor/kotoba-client-consent.css"), path.join(out, "runtime-consent.css"));
 await cp(path.join(here, "src/host.js"), path.join(out, "host.js"));
+// Bot status page (Tauri host only): the page, its pure domain and the bundled
+// profile. The page reaches bots.itonami.cloud only through host.js and the broker.
+const botPage = process.env.BOT_PAGE !== "0";
+if (botPage) {
+  await cp(path.join(here, "src/bot/bot.html"), path.join(out, "bot.html"));
+  await cp(path.join(here, "src/bot/bot.js"), path.join(out, "bot.js"));
+  await cp(path.join(here, "src/bot-domain.mjs"), path.join(out, "bot-domain.js"));
+  const profile = JSON.parse(await readFile(path.join(here, "../profiles/business-bot-profile.json"), "utf8"));
+  const { profileProblems } = await import("../src/bot-domain.mjs");
+  const profileIssues = profileProblems(profile);
+  if (profileIssues.length) fail(`bundled bot profile is invalid: ${profileIssues.join(", ")}`);
+  await writeFile(path.join(out, "bot-profile.json"), JSON.stringify(profile, null, 2) + "\n");
+}
 await writeFile(path.join(out, "descriptor.json"), JSON.stringify(descriptor, null, 2) + "\n");
 await writeFile(path.join(out, "descriptor.js"), `export default ${JSON.stringify(descriptor)};\n`);
 
@@ -53,7 +66,11 @@ for (const rel of htmlFiles) {
     ...(inlineAttrs ? ["style-src-attr 'unsafe-inline'"] : []), "img-src 'self' data:", "font-src 'self'",
     `${connect === "connect-src 'none'" ? "connect-src 'self'" : connect.replace("connect-src ", "connect-src 'self' ")} ipc: http://ipc.localhost`,
     "object-src 'none'", "frame-src 'none'", "base-uri 'none'", "form-action 'none'"].join("; ");
-  html = html.replace(/<head([^>]*)>/iu, `<head$1><meta http-equiv="Content-Security-Policy" content="${csp}"><link rel="stylesheet" href="/runtime-consent.css"><script type="module" src="/host.js"></script>`);
+  if (botPage && rel === "index.html") {
+    if (!/<nav>/iu.test(html)) fail("index.html has no <nav> for the bot page link");
+    html = html.replace(/<nav>/iu, '<nav>\n      <a href="/bot.html">bot</a>');
+  }
+  html = html.replace(/<head([^>]*)>/iu,`<head$1><meta http-equiv="Content-Security-Policy" content="${csp}"><link rel="stylesheet" href="/runtime-consent.css"><script type="module" src="/host.js"></script>`);
   await writeFile(path.join(out, rel), html);
 }
 

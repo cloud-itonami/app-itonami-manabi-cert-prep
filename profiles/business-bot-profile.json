@@ -1,0 +1,76 @@
+{
+  "schema": "itonami.business-bot-profile.v1",
+  "provenance": {
+    "repository": "com-junkawasaki/root",
+    "path": "90-docs/business/itonami-business-bot-profiles.json",
+    "revision": "f41e05061b320cd5d7e28ec8b28ea1e422b1cdc2",
+    "registry_schema": "itonami.business-bot-profiles.v1",
+    "registry_generated": "2026-09-03",
+    "transformation": "single profile entry copied unchanged under `profile`"
+  },
+  "mission": {
+    "statement": "全人類を労働から解放する",
+    "instrument": "governed business bots: one DO per (blueprint x assignment), hourly bounded loop, governor-vetted effects, append-only audit",
+    "origin_directive": "ADR-2609022000 (yui, 2026-09-02 owner directive)"
+  },
+  "profile": {
+    "profile_id": "bot-profile:cloud-itonami-8569",
+    "kind": "business",
+    "business_blueprint": {
+      "id": "cloud-itonami-8569",
+      "name": "Community Learning Support",
+      "domain": "education/support",
+      "isic_rev5": "8569",
+      "repo": "https://github.com/gftdcojp/cloud-itonami-8569",
+      "repo_path": "/gftdcojp/cloud-itonami-8569",
+      "governor": "learner-safety-governor",
+      "console": null,
+      "offer": "Coordinate tutoring, attendance follow-up, study plans, scholarship guidance and learner-support evidence.",
+      "self_registered": false,
+      "maturity_seed": false
+    },
+    "identity": {
+      "mail": null,
+      "note": "agentmail inbox optional; not provisioned yet"
+    },
+    "mission": {
+      "thesis": "全人類を労働から解放する — blueprint が担う経済領域を governed actor で自動化する",
+      "domain_goal": "domain-automation",
+      "domain_family": "education"
+    },
+    "runtime": {
+      "plane": "itonami-grok-bots (DO per bot)",
+      "model": "murakumo-main alias (KV resolved; never hardcode model ids)",
+      "interval_ms": 3600000,
+      "governor": "learner-safety-governor",
+      "registry_source": "https://itonami.cloud/api/open-business (DO re-fetches at launch)"
+    },
+    "money": {
+      "spending": "unique lending position only (trial LP, non-transferable, no on-chain token)",
+      "allowed_services": [
+        "murakumo",
+        "kotobase"
+      ],
+      "credit_bounds_micro_usdc": {
+        "min": 1000,
+        "max": 50000
+      },
+      "state": {
+        "assigned": false
+      }
+    },
+    "audit": {
+      "checkpoint": "append-only event ledger per DO",
+      "public_feed": "https://itonami.cloud/api/v1/grok-bots/bots/{bot_id}/activity",
+      "integrity": "sha256 / itonami-stable-json-v1 (measured on live events)"
+    },
+    "health_rule": {
+      "fail_closed": true,
+      "rule": "running is not healthy; read last_error + published vs failed + recent checkpoint"
+    },
+    "provisioning": {
+      "state": "blueprint-only",
+      "next_action": "launch-second-business-bot-candidate"
+    }
+  }
+}
