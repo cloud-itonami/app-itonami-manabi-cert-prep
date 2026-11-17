@@ -56,5 +56,7 @@ npm run build:android:x86    # x86_64 debug APK (emulator)
 The APK is a debug test artifact, not a signed or OTA release, and it is not enrolled in Itonami Store.
 Tracking: AWAI-3196 (this unit), parent AWAI-3191 (education bot profile + Awai app on Awai Android).
 
+Design for per-operation approval of bot actions (not implemented, blocked): [`../docs/bot-approval-design.md`](../docs/bot-approval-design.md).
+
 Not done here: signed release, store publication, an installed-app run on a device, bot launch, app-to-bot
 write operations, license resolution.
