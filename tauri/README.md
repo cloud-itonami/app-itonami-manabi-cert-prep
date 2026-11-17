@@ -18,4 +18,20 @@ existing static hosting are unchanged; this directory is a second host.
 - `npm test` runs the node tests (descriptor validity, CSP derivation, fail-closed build, host refusal).
   `cd src-tauri && cargo check --locked` needs `npm run build` first.
 
-Not done here: signed release, store publication, an installed-app run on a device, license resolution.
+## Android
+
+`src-tauri/gen/android` is the generated Tauri Android project (package `cloud.itonami.manabi_cert_prep`,
+minSdk 35). It uses the same `dist/`, descriptor, CSP and broker as the desktop host; no Android permission
+or plugin is added. Android needs SDK 35+, NDK 27.0.12077973 and JDK 21, with `ANDROID_HOME`, `NDK_HOME` and
+`JAVA_HOME` set:
+
+```sh
+npm run build:android        # arm64 debug APK
+npm run build:android:x86    # x86_64 debug APK (emulator)
+```
+
+The APK is a debug test artifact, not a signed or OTA release, and it is not enrolled in Itonami Store.
+Tracking: AWAI-3196 (this unit), parent AWAI-3191 (education bot profile + Awai app on Awai Android).
+
+Not done here: signed release, store publication, an installed-app run on a device, the bot profile and its
+status view, license resolution.
