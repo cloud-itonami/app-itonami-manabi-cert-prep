@@ -2,6 +2,7 @@ package cloud.itonami.manabi_cert_prep
 
 import android.content.res.Configuration
 import android.os.Bundle
+import androidx.activity.SystemBarStyle
 import androidx.activity.enableEdgeToEdge
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
@@ -13,7 +14,12 @@ import kotlin.math.max
 // awai-os apps/isekai AWAI-3216, apps/x402 AWAI-3284 and Hiring AWAI-3392).
 class MainActivity : TauriActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
-    enableEdgeToEdge()
+    // The page has one light theme, so both bars use the light style (dark
+    // icons, no dark scrim) in either system theme instead of following it.
+    enableEdgeToEdge(
+      statusBarStyle = SystemBarStyle.light(PAGE_BG, PAGE_BG),
+      navigationBarStyle = SystemBarStyle.light(PAGE_BG, PAGE_BG),
+    )
     super.onCreate(savedInstanceState)
     val content = findViewById<android.view.View>(android.R.id.content)
     ViewCompat.setOnApplyWindowInsetsListener(content) { view, insets ->
@@ -38,7 +44,7 @@ class MainActivity : TauriActivity() {
   // no dark variant), so the decor behind the bars is always that colour with
   // dark bar icons, whatever the system theme.
   private fun applySystemBarAppearance() {
-    window.decorView.setBackgroundColor(0xFFF7F3ED.toInt())
+    window.decorView.setBackgroundColor(PAGE_BG)
     // The 3-button navigation scrim is chosen when the activity starts and does
     // not follow a live theme switch; without this the scrim shows through.
     if (android.os.Build.VERSION.SDK_INT >= 29) window.isNavigationBarContrastEnforced = false
@@ -46,5 +52,10 @@ class MainActivity : TauriActivity() {
       isAppearanceLightStatusBars = true
       isAppearanceLightNavigationBars = true
     }
+  }
+
+  private companion object {
+    // public/calm.css --paper-cream
+    const val PAGE_BG = 0xFFF7F3ED.toInt()
   }
 }
