@@ -89,3 +89,12 @@ Under `com.etzhayyim.manabi.*`:
 ## License
 
 Apache-2.0 with the etzhayyim Charter Compliance Rider v2.0 per ADR-2605192200.
+
+## Divergence from upstream (2026-11-21, JUN-1410)
+
+The owner decided to unify the domains under `itonami.app`, so the wrangler routes and the
+`did:web` identifier moved from `etzhayyim.com` to `itonami.app`. This app is not deployed and the old
+identifier never resolved. The new hosts (`manabi-cert-prep.itonami.app`, `mncprp01.itonami.app`) resolve through the `itonami.app`
+wildcard record but answer 522, because no Worker is bound (measured 2026-11-21).
+
+Unchanged: other services' hostnames, the lexicon namespace, and `docs/adr/` (the record of that time).
