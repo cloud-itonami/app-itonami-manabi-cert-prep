@@ -1,4 +1,4 @@
-// manabi-cert-prep.etzhayyim.com — manabi cert_prep knowledge-domain study PWA
+// manabi-cert-prep.itonami.app — manabi cert_prep knowledge-domain study PWA
 // Per ADR-2605264400 (sub-charter under ADR-2605261045 manabi master).
 //
 // R0 phase W0+W1 — static UI only, NO LLM. judah LiteLLM gateway wiring
@@ -25,7 +25,7 @@ interface Env {
   ASSETS?: { fetch(req: CFRequest): Promise<CFResponse> };
 }
 
-const ACTOR_DID = "did:web:manabi-cert-prep.etzhayyim.com";
+const ACTOR_DID = "did:web:manabi-cert-prep.itonami.app";
 
 // W0/W1 = scaffold; R1 active NSIDs land at R1 commit
 const R1_ACTIVE_NSIDS = new Set([

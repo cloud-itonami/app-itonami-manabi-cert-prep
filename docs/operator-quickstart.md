@@ -139,8 +139,8 @@ change that needs one of those to land needs the ADR amended first.
 
 ## Deploying
 
-Deployment is Cloudflare Workers against `manabi-cert-prep.etzhayyim.com` and
-`mncprp01.etzhayyim.com` (see `wrangler.jsonc`). This quickstart does not cover it
+Deployment is Cloudflare Workers against `manabi-cert-prep.itonami.app` and
+`mncprp01.itonami.app` (see `wrangler.jsonc`). This quickstart does not cover it
 because it was not exercised here — running `wrangler deploy` from a checkout
 behind `main` silently reverts whatever landed in between, so sync first. That is
 a workspace-wide rule, not a rule of this app.

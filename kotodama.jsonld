@@ -1,6 +1,6 @@
 {
   "@context": "https://etzhayyim.com/ns/kotodama/v1",
-  "@id": "did:web:manabi-cert-prep.etzhayyim.com",
+  "@id": "did:web:manabi-cert-prep.itonami.app",
   "name": "manabi-cert-prep",
   "nanoid": "mncprp01",
   "project": "manabi",

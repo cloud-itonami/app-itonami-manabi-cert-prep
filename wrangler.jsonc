@@ -15,12 +15,12 @@
   },
   "routes": [
     {
-      "pattern": "manabi-cert-prep.etzhayyim.com/*",
-      "zone_name": "etzhayyim.com"
+      "pattern": "manabi-cert-prep.itonami.app/*",
+      "zone_name": "itonami.app"
     },
     {
-      "pattern": "mncprp01.etzhayyim.com/*",
-      "zone_name": "etzhayyim.com"
+      "pattern": "mncprp01.itonami.app/*",
+      "zone_name": "itonami.app"
     }
   ],
   "assets": {
