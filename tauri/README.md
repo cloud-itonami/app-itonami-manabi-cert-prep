@@ -13,7 +13,7 @@ existing static hosting are unchanged; this directory is a second host.
   - Page scripts load once, at the end. A page without `<body>` or with an inline script fails the build.
   - The app still runs as `trusted-page-v1`: behaviour is unchanged.
   - `../public` and the web edition are not touched.
-  - Still needed for `restricted-wasm-v1`: the history's `localStorage` moves to the runtime's device storage (runtime PR 1), and the history clear stops using `confirm()` (a sandboxed guest has no native dialogs).
+  - Still needed for `restricted-wasm-v1`: the history's `localStorage` moves to the runtime's device storage (runtime PR 1),. The history clear already uses the app's own confirmation (`public/calm.js`), not `confirm()`, because a sandboxed guest has no native dialogs.
 - The descriptor declares **only the two public bot reads** below; the study pages use none. The CSP is
   `connect-src 'self' https://bots.itonami.cloud`, equal to what the runtime derives from the descriptor
   (checked in the tests). `host.js` rejects any other cross-origin `fetch` before it leaves the page, and
