@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -104,12 +104,13 @@ test("only the two declared GET routes are allowed; CSP equals the runtime deriv
   execFileSync(process.execPath, [path.join(here, "scripts/build.mjs")], { env: { ...process.env, TAURI_DIST: out }, stdio: "pipe" });
   const derived = clientRuntimeConnectSrc(descriptor, requestedCapabilities(descriptor), [], ["https://tauri.localhost"]);
   assert.equal(derived, `connect-src ${d.botsOrigin}`);
-  for (const page of ["index.html", "bot.html"]) {
-    const html = readFileSync(path.join(out, page), "utf8");
-    assert.match(html, /connect-src 'self' https:\/\/bots\.itonami\.cloud ipc: http:\/\/ipc\.localhost;/u, page);
-  }
+  // One document (KOTOBA-159): the bot page is a section of index.html.
+  const html = readFileSync(path.join(out, "index.html"), "utf8");
+  assert.match(html, /connect-src 'self' https:\/\/bots\.itonami\.cloud ipc: http:\/\/ipc\.localhost;/u);
+  assert.match(html, /<section data-page="\/bot\.html"[^>]* hidden>/u);
+  assert.equal(existsSync(path.join(out, "bot.html")), false);
   assert.match(readFileSync(path.join(out, "index.html"), "utf8"), /<a href="\/bot\.html">bot<\/a>/u);
   assert.deepEqual(json(path.relative(here, path.join(out, "bot-profile.json"))), profile);
   const release = JSON.parse(readFileSync(path.join(out, "release.json"), "utf8"));
-  for (const f of ["bot.html", "bot.js", "bot-domain.js", "bot-profile.json"]) assert.ok(release.files[f], f);
+  for (const f of ["bot.js", "bot-domain.js", "bot-profile.json", "spa.js"]) assert.ok(release.files[f], f);
 });

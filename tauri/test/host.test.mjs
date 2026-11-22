@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -25,10 +25,10 @@ test("descriptor is valid for the shared runtime and every operation is each-ope
   assert.ok(descriptor.operations.every((o) => o.endpoint.origin !== "https://tauri.localhost"));
 });
 
-test("build adds a per-page CSP derived from the descriptor and injects the host on every page", () => {
+test("build folds the pages into one document with a CSP derived from the descriptor and the host injected", () => {
   const { src, out } = fixture();
   build(src, out);
-  for (const page of ["index.html", "sub/page.html"]) {
+  for (const page of ["index.html"]) {
     const html = readFileSync(path.join(out, page), "utf8");
     const csp = html.match(/Content-Security-Policy" content="([^"]+)"/)[1];
     assert.match(csp, /default-src 'none'/);
@@ -38,7 +38,9 @@ test("build adds a per-page CSP derived from the descriptor and injects the host
     assert.ok(html.includes('<script type="module" src="/host.js"></script>'));
   }
   assert.match(readFileSync(path.join(out, "index.html"), "utf8"), /style-src 'self' 'sha256-[^']+'; style-src-attr 'unsafe-inline'/);
-  assert.doesNotMatch(readFileSync(path.join(out, "sub/page.html"), "utf8"), /style-src-attr/);
+  // One document (KOTOBA-159): the other page is folded in as a hidden section.
+  assert.match(readFileSync(path.join(out, "index.html"), "utf8"), /<section data-page="\/sub\/page\.html" data-title="" hidden>/);
+  assert.equal(existsSync(path.join(out, "sub/page.html")), false);
   const release = JSON.parse(readFileSync(path.join(out, "release.json"), "utf8"));
   assert.ok(release.files["host.js"] && release.files["runtime.js"] && release.files["descriptor.json"]);
 });
