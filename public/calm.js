@@ -148,16 +148,21 @@
 
   // The app's own confirmation instead of window.confirm(): a sandboxed app
   // (restricted-wasm-v1, KOTOBA-159) has no native dialogs, where confirm()
-  // returns false without asking. Nothing is deleted until "削除する" is pressed;
-  // focus starts on "やめる". Text is set with textContent only.
+  // returns false without asking. Modal like confirm(): a <dialog> opened with
+  // showModal() (not blocked by sandbox="allow-scripts"), so the rest of the page
+  // is inert and aria-modal holds. Focus starts on "やめる" (the safe answer for a
+  // destructive action), Tab stays inside, Escape cancels, and focus returns to
+  // the button that opened it. Nothing is deleted until "削除する" is pressed.
+  // Text is set with textContent only.
   const CLEAR_CONFIRM_TEXT = "この端末に保存された学習履歴を全て削除します。よろしいですか?";
   function openClearConfirm(clearBtn, onConfirm) {
     if (document.getElementById("history-clear-confirm")) return;
-    const box = document.createElement("div");
-    box.id = "history-clear-confirm";
-    box.className = "calm-card";
-    box.setAttribute("role", "alertdialog");
-    box.setAttribute("aria-labelledby", "history-clear-confirm-text");
+    const dialog = document.createElement("dialog");
+    dialog.id = "history-clear-confirm";
+    dialog.className = "calm-card calm-dialog";
+    dialog.setAttribute("role", "alertdialog");
+    dialog.setAttribute("aria-modal", "true");
+    dialog.setAttribute("aria-labelledby", "history-clear-confirm-text");
     const text = document.createElement("p");
     text.id = "history-clear-confirm-text";
     text.textContent = CLEAR_CONFIRM_TEXT;
@@ -175,19 +180,26 @@
     actions.appendChild(yes);
     actions.appendChild(document.createTextNode(" "));
     actions.appendChild(no);
-    box.appendChild(text);
-    box.appendChild(actions);
-    const close = function () {
-      box.remove();
-      clearBtn.disabled = false;
+    dialog.appendChild(text);
+    dialog.appendChild(actions);
+    let confirmed = false;
+    dialog.addEventListener("close", function () {
+      dialog.remove();
+      if (confirmed) onConfirm();
       clearBtn.focus();
-    };
-    yes.addEventListener("click", function () { onConfirm(); close(); });
-    no.addEventListener("click", close);
-    box.addEventListener("keydown", function (e) { if (e.key === "Escape") close(); });
-    clearBtn.disabled = true;
-    const anchor = clearBtn.closest("p") || clearBtn;
-    anchor.insertAdjacentElement("afterend", box);
+    });
+    // Escape: the browser fires "cancel" and closes; treat it as "やめる".
+    dialog.addEventListener("cancel", function () { confirmed = false; });
+    // Tab and Shift+Tab cycle between the two buttons only.
+    dialog.addEventListener("keydown", function (e) {
+      if (e.key !== "Tab") return;
+      e.preventDefault();
+      (document.activeElement === yes ? no : yes).focus();
+    });
+    yes.addEventListener("click", function () { confirmed = true; dialog.close(); });
+    no.addEventListener("click", function () { dialog.close(); });
+    document.body.appendChild(dialog);
+    dialog.showModal();
     no.focus();
   }
 

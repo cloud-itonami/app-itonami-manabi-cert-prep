@@ -6,7 +6,7 @@ import { mkdtempSync, readFileSync, readdirSync, writeFileSync, mkdirSync } from
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { hashFor, idKey, normalizePage, routeFromHash, routeFromHref } from "../src/spa.js";
+import { hashFor, idKey, normalizePage, routeFromHash, routeFromHref, scrollTargetFor } from "../src/spa.js";
 
 const here = fileURLToPath(new URL("../", import.meta.url));
 const pages = new Set(["/index.html", "/domains.html", "/history.html", "/study/cisa.html", "/study/cissp.html", "/bot.html"]);
@@ -31,6 +31,15 @@ test("router: the hash round-trips, and an empty or unknown hash is the start pa
   assert.deepEqual(routeFromHash("", pages), { page: "/index.html", anchor: "" });
   assert.deepEqual(routeFromHash("#/evil.html", pages), { page: "/index.html", anchor: "" });
   assert.equal(idKey("/study/cisa.html"), "study-cisa");
+});
+
+test("router: Back/Forward restore the saved scroll; a new navigation goes to its anchor or the top", () => {
+  assert.deepEqual(scrollTargetFor({ scroll: 2500 }, "d3"), { kind: "restore", y: 2500 });
+  assert.deepEqual(scrollTargetFor({ scroll: 0 }, ""), { kind: "restore", y: 0 });
+  assert.deepEqual(scrollTargetFor(null, "d3"), { kind: "anchor", anchor: "d3" });
+  assert.deepEqual(scrollTargetFor({}, ""), { kind: "top" });
+  assert.deepEqual(scrollTargetFor({ scroll: -1 }, ""), { kind: "top" });
+  assert.deepEqual(scrollTargetFor({ scroll: "2500" }, ""), { kind: "top" });
 });
 
 const strip = (html) => html.replace(/<script\b[^>]*>[\s\S]*?<\/script>/giu, "").replace(/<[^>]+>/gu, " ").replace(/\s+/gu, " ").trim();

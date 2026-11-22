@@ -25,6 +25,8 @@ describe("no native dialogs (KOTOBA-159)", () => {
   it("the history clear asks with the app's own confirmation", () => {
     const code = readFileSync(join(PUBLIC_DIR, "calm.js"), "utf8");
     expect(code).toContain('role", "alertdialog"');
+    expect(code).toContain('"aria-modal", "true"');
+    expect(code).toContain("showModal()");
     expect(code).toContain("この端末に保存された学習履歴を全て削除します。よろしいですか?");
     expect(code).toContain('"削除する"');
     expect(code).toContain('"やめる"');
