@@ -44,6 +44,52 @@ if (botPage) {
   if (profileIssues.length) fail(`bundled bot profile is invalid: ${profileIssues.join(", ")}`);
   await writeFile(path.join(out, "bot-profile.json"), JSON.stringify(profile, null, 2) + "\n");
 }
+// One document (KOTOBA-159): fold every page into index.html as a hidden
+// <section data-page="/x.html">, so the frontend is a single guest document, as
+// restricted-wasm-v1 will need. src/spa.js shows one section at a time. Ids that
+// more than one page used are prefixed per page (spa.js maps #anchors to them).
+// Page scripts are deduplicated and loaded once at the end. ../public is unchanged.
+const { idKey } = await import("../src/spa.js");
+const pagesFound = [];
+await (async function collect(dir) {
+  for (const entry of await readdir(path.join(out, dir), { withFileTypes: true })) {
+    const rel = path.posix.join(dir, entry.name);
+    if (entry.isDirectory()) await collect(rel); else if (rel.endsWith(".html")) pagesFound.push(rel);
+  }
+})("");
+if (!pagesFound.includes("index.html")) fail("index.html is missing");
+const ordered = ["index.html", ...pagesFound.filter((rel) => rel !== "index.html").sort()];
+const parsed = [];
+for (const rel of ordered) {
+  const html = await readFile(path.join(out, rel), "utf8");
+  if (!/<head[^>]*>/iu.test(html)) fail(`${rel} has no <head>`);
+  const body = /<body[^>]*>([\s\S]*)<\/body>/iu.exec(html);
+  if (!body) fail(`${rel} has no <body>`);
+  const scripts = [...body[1].matchAll(/<script\b[^>]*\bsrc=["']([^"']+)["'][^>]*>\s*<\/script>/giu)].map((m) => ({ tag: m[0].trim(), src: m[1] }));
+  const content = body[1].replace(/<script\b[^>]*\bsrc=["'][^"']+["'][^>]*>\s*<\/script>/giu, "");
+  if (/<script\b/iu.test(content)) fail(`${rel} has an inline script, which the CSP would block`);
+  const title = /<title>([^<]*)<\/title>/iu.exec(html)?.[1] ?? "";
+  const ids = [...content.matchAll(/\sid=["']([^"']+)["']/giu)].map((m) => m[1]);
+  parsed.push({ rel, page: `/${rel}`, html, content, scripts, title, ids });
+}
+const idCount = new Map();
+for (const p of parsed) for (const id of new Set(p.ids)) idCount.set(id, (idCount.get(id) ?? 0) + 1);
+const shared = new Set([...idCount].filter(([, n]) => n > 1).map(([id]) => id));
+const escapeAttr = (v) => v.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
+const sections = parsed.map((p) => {
+  const content = p.content.replace(/(\sid=["'])([^"']+)(["'])/giu, (m, a, id, b) => (shared.has(id) ? `${a}${idKey(p.page)}--${id}${b}` : m));
+  return `<section data-page="${escapeAttr(p.page)}" data-title="${escapeAttr(p.title)}"${p.rel === "index.html" ? "" : " hidden"}>${content}</section>`;
+});
+const scriptTags = [];
+for (const p of parsed) for (const sc of p.scripts) if (!scriptTags.some((t) => t.src === sc.src)) scriptTags.push(sc);
+const index = parsed[0].html.replace(/<body([^>]*)>[\s\S]*<\/body>/iu, (m, attrs) =>
+  `<body${attrs}>\n${sections.join("\n")}\n${scriptTags.map((t) => t.tag).join("\n")}\n<script type="module" src="/spa.js"></script>\n</body>`);
+for (const p of parsed) await rm(path.join(out, p.rel));
+await writeFile(path.join(out, "index.html"), index);
+await cp(path.join(here, "src/spa.js"), path.join(out, "spa.js"));
+for (const dir of new Set(parsed.map((p) => path.posix.dirname(p.rel)).filter((d) => d !== "."))) {
+  try { if ((await readdir(path.join(out, dir))).length === 0) await rm(path.join(out, dir), { recursive: true }); } catch {}
+}
 await writeFile(path.join(out, "descriptor.json"), JSON.stringify(descriptor, null, 2) + "\n");
 await writeFile(path.join(out, "descriptor.js"), `export default ${JSON.stringify(descriptor)};\n`);
 

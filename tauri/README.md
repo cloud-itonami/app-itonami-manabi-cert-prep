@@ -4,7 +4,16 @@ Runs the static `public/` bundle as a Tauri 3.0.0-alpha.6 (Wry) app. The Worker 
 existing static hosting are unchanged; this directory is a second host.
 
 - `npm run build` copies `../public` to `dist/`, adds the pinned consent broker (`runtime.js`), the host
-  adapter (`host.js`) and the descriptor, and writes a per-page CSP derived from the descriptor.
+  adapter (`host.js`) and the descriptor, and writes a CSP derived from the descriptor.
+- **One document (KOTOBA-159).** The build folds every page into `dist/index.html`, one hidden
+  `<section data-page="/x.html">` per page, because `restricted-wasm-v1` mounts a single guest document.
+  - `src/spa.js` shows one section at a time and keeps the address in the hash (`#/domains.html`,
+    `#/study/cisa.html#d3`), so links, Back and anchors work as they did across pages.
+  - Ids that more than one page used (`d1`…`d5` in the two study pages) become `study-cisa--d1` and so on.
+  - Page scripts load once, at the end. A page without `<body>` or with an inline script fails the build.
+  - The app still runs as `trusted-page-v1`: behaviour is unchanged.
+  - `../public` and the web edition are not touched.
+  - Still needed for `restricted-wasm-v1`: the history's `localStorage` moves to the runtime's device storage (runtime PR 1), and the history clear stops using `confirm()` (a sandboxed guest has no native dialogs).
 - The descriptor declares **only the two public bot reads** below; the study pages use none. The CSP is
   `connect-src 'self' https://bots.itonami.cloud`, equal to what the runtime derives from the descriptor
   (checked in the tests). `host.js` rejects any other cross-origin `fetch` before it leaves the page, and
@@ -17,7 +26,7 @@ existing static hosting are unchanged; this directory is a second host.
   `learner-safety-governor`), copied from `com-junkawasaki/root`
   `90-docs/business/itonami-business-bot-profiles.json`; the revision is under `provenance`. Update it only
   from that registry. It is a design and provisioning record, not a launch.
-- **Page**: the Tauri build adds `bot.html` (linked from the home page nav) with `src/bot-domain.mjs`. On a
+- **Page**: the Tauri build adds the `bot.html` page (a section of the one document, linked from the home page nav) with `src/bot-domain.mjs`. On a
   button press it reads `GET https://bots.itonami.cloud/v1/grok-bots/businesses` and, only for a bot id
   from that list, `GET /v1/grok-bots/bots/{bot_id}/activity`. Each read opens its own approval dialog;
   denying sends nothing; nothing refreshes in the background; there are no write operations.
