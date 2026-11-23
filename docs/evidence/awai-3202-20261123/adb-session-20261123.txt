@@ -1,0 +1,40 @@
+=== adb-session evidence started 2026年 11月23日 月曜日 13時43分48秒 JST ===
+Filesystem      Size    Used   Avail Capacity iused ifree %iused  Mounted on
+/dev/disk3s5   228Gi   156Gi    29Gi    85%    4.2M  303M    1%   /System/Volumes/Data
+--- adb devices while booting ---
+List of devices attached
+emulator-5554          device product:sdk_phone64_arm64 model:Android_SDK_built_for_arm64 device:emu64a transport_id:19
+
+boot_completed= 13:43:53
+boot_completed=1 13:43:59
+--- adb devices WHILE RUNNING (item 1) ---
+List of devices attached
+emulator-5554          device product:sdk_phone64_arm64 model:Android_SDK_built_for_arm64 device:emu64a transport_id:19
+
+SERIAL=emulator-5554
+Android SDK built for arm64
+37
+17
+--- install log (item 3) ---
+1795409039
+Performing Streamed Install
+Success
+Starting: Intent { cmp=cloud.itonami.manabi_cert_prep/.MainActivity }
+screencap serial exit: 0 (13:44:06)
+-rw-r--r--@ 1 node  nodes   352K 11月 23 13:44 docs/evidence/awai-3202-20261123/session-step1-home.png
+dialog shot 13:44:13
+ 2840903 docs/evidence/awai-3202-20261123/logcat-session.txt
+OK: killing emulator, bye bye
+OK
+List of devices attached
+
+pgrep qemu exit: 1
+Filesystem      Size    Used   Avail Capacity iused ifree %iused  Mounted on
+/dev/disk3s5   228Gi   156Gi    29Gi    85%    4.2M  303M    1%   /System/Volumes/Data
+442M	docs/evidence/awai-3202-20261123
+-rw-r--r--@ 1 node  nodes   1.3K 11月 23 13:44 docs/evidence/awai-3202-20261123/adb-session-20261123.txt
+-rw-r--r--@ 1 node  nodes   2.7M 11月 23 13:44 docs/evidence/awai-3202-20261123/logcat-session.txt
+-rw-r--r--@ 1 node  nodes   352K 11月 23 13:44 docs/evidence/awai-3202-20261123/session-step1-home.png
+-rw-r--r--@ 1 node  nodes   342K 11月 23 13:44 docs/evidence/awai-3202-20261123/session-step2-bot.png
+-rw-r--r--@ 1 node  nodes   329K 11月 23 13:44 docs/evidence/awai-3202-20261123/session-step3-dialog.png
+-rw-r--r--@ 1 node  nodes   344K 11月 23 13:44 docs/evidence/awai-3202-20261123/session-step4-afterdeny.png
