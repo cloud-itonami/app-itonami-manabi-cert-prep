@@ -20,6 +20,17 @@ for (const [name, digest] of Object.entries(pins.files)) {
 }
 try { await stat(path.join(source, "index.html")); } catch { fail(`${path.join(source, "index.html")} is missing`); }
 
+// Build-time origin override for local/dev testing only. Production default
+// (committed in src/bot-domain.mjs) is https://bots.itonami.cloud; tests set
+// MANABI_BOTS_ORIGIN=https://127.0.0.1:PORT to point the bundled page at a local
+// stub. The override is applied to the descriptor (CSP + descriptor.json) and
+// patched into the copied dist files below; the source is never rewritten.
+const botsOriginOverride = (process.env.MANABI_BOTS_ORIGIN ?? "").trim().replace(/\/+$/u, "");
+if (botsOriginOverride) {
+  try { new URL(botsOriginOverride); } catch { fail(`MANABI_BOTS_ORIGIN is not a URL: ${botsOriginOverride}`); }
+  for (const op of descriptor.operations) op.endpoint.origin = botsOriginOverride;
+}
+
 const capabilities = requestedCapabilities(descriptor);
 const problems = clientRuntimeProblems(descriptor, capabilities, ["https://tauri.localhost"]);
 if (problems.length) fail(`descriptor is invalid: ${JSON.stringify(problems)}`);
@@ -38,6 +49,19 @@ if (botPage) {
   await cp(path.join(here, "src/bot/bot.html"), path.join(out, "bot.html"));
   await cp(path.join(here, "src/bot/bot.js"), path.join(out, "bot.js"));
   await cp(path.join(here, "src/bot-domain.mjs"), path.join(out, "bot-domain.js"));
+  if (botsOriginOverride) {
+    // Patch the copied dist files only; the committed source keeps the prod origin.
+    const domainJs = await readFile(path.join(out, "bot-domain.js"), "utf8");
+    if (!domainJs.includes('export const botsOrigin = "https://bots.itonami.cloud";')) {
+      fail("bot-domain.js does not carry the production botsOrigin constant");
+    }
+    await writeFile(path.join(out, "bot-domain.js"),
+      domainJs.replace('export const botsOrigin = "https://bots.itonami.cloud";',
+        `export const botsOrigin = ${JSON.stringify(botsOriginOverride)};`));
+    const botHtml = await readFile(path.join(out, "bot.html"), "utf8");
+    await writeFile(path.join(out, "bot.html"),
+      botHtml.replaceAll("https://bots.itonami.cloud", botsOriginOverride));
+  }
   const profile = JSON.parse(await readFile(path.join(here, "../profiles/business-bot-profile.json"), "utf8"));
   const { profileProblems } = await import("../src/bot-domain.mjs");
   const profileIssues = profileProblems(profile);
