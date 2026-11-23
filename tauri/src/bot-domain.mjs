@@ -3,6 +3,8 @@
 // the page and the tests import it. Same rules as network-awai/app-itonami-rodo.
 
 export const blueprintId = "cloud-itonami-8569";
+// Production default. Build-time override for local/dev testing: `MANABI_BOTS_ORIGIN`
+// (see scripts/build.mjs). The committed source always keeps the production value.
 export const botsOrigin = "https://bots.itonami.cloud";
 export const assignmentsPath = "/v1/grok-bots/businesses";
 export const activityPrefix = "/v1/grok-bots/bots/";

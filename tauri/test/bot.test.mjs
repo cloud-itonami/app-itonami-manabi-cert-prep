@@ -113,4 +113,19 @@ test("only the two declared GET routes are allowed; CSP equals the runtime deriv
   assert.deepEqual(json(path.relative(here, path.join(out, "bot-profile.json"))), profile);
   const release = JSON.parse(readFileSync(path.join(out, "release.json"), "utf8"));
   for (const f of ["bot.js", "bot-domain.js", "bot-profile.json", "spa.js"]) assert.ok(release.files[f], f);
+
+  // Build-time override: MANABI_BOTS_ORIGIN points the bundle at a local stub;
+  // the committed default stays production (checked above + by import below).
+  assert.equal(d.botsOrigin, "https://bots.itonami.cloud");
+  const stubOut = path.join(mkdtempSync(path.join(tmpdir(), "tauri-bot-stub-")), "dist");
+  execFileSync(process.execPath, [path.join(here, "scripts/build.mjs")],
+    { env: { ...process.env, TAURI_DIST: stubOut, MANABI_BOTS_ORIGIN: "https://127.0.0.1:18089" }, stdio: "pipe" });
+  const stubDomain = readFileSync(path.join(stubOut, "bot-domain.js"), "utf8");
+  assert.match(stubDomain, /export const botsOrigin = "https:\/\/127\.0\.0\.1:18089";/u);
+  const stubHtml = readFileSync(path.join(stubOut, "index.html"), "utf8");
+  assert.match(stubHtml, /connect-src 'self' https:\/\/127\.0\.0\.1:18089 ipc: http:\/\/ipc\.localhost;/u);
+  assert.match(stubHtml, /接続先: https:\/\/127\.0\.0\.1:18089/u);
+  assert.doesNotMatch(stubHtml, /bots\.itonami\.cloud/u);
+  const stubDesc = JSON.parse(readFileSync(path.join(stubOut, "descriptor.json"), "utf8"));
+  assert.ok(stubDesc.operations.every((o) => o.endpoint.origin === "https://127.0.0.1:18089"));
 });
