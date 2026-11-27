@@ -27,7 +27,14 @@ interface Env {
 
 const ACTOR_DID = "did:web:manabi-cert-prep.itonami.app";
 
-// W0/W1 = scaffold; R1 active NSIDs land at R1 commit
+// Fail-closed R1 phase gate value: only an explicit "ratified" value unlocks R1
+// (Council Lv6+ >=3 ratification of ADR-2605264400). Any other value — including
+// "locked", empty string, typos, or unset — remains locked.
+export const R1_UNLOCKED_PHASE_GATE = "ratified";
+
+// W0/W1 = scaffold; R1 active NSIDs land at R1 commit.
+// Lexicon namespace stays com.etzhayyim.manabi.* per JUN-1410 (pinned to upstream
+// etzhayyim/actor-manabi contracts in contracts/lexicons/provenance.json).
 const R1_ACTIVE_NSIDS = new Set([
   "com.etzhayyim.manabi.certPrepSession",
   "com.etzhayyim.manabi.domainMasteryAttestation",
@@ -36,6 +43,38 @@ const R1_ACTIVE_NSIDS = new Set([
 const R2_GATED_NSIDS = new Set([
   "com.etzhayyim.manabi.personalMaterialImport",
 ]);
+
+// ADR-2605215000: at W0/W1 (and until R1 amends the Worker-to-Murakumo transport),
+// only the local Murakumo gateway on 127.0.0.1:4000 is permitted.
+export function validateGatewayUrl(raw: string | undefined): { ok: true; url: string } | { ok: false; reason: string } {
+  if (typeof raw !== "string" || raw.trim() === "") {
+    return { ok: false, reason: "missing-gateway-url" };
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return { ok: false, reason: "invalid-gateway-url" };
+  }
+  if (parsed.username !== "" || parsed.password !== "") {
+    return { ok: false, reason: "gateway-url-has-credentials" };
+  }
+  if (
+    parsed.protocol !== "http:" ||
+    parsed.hostname !== "127.0.0.1" ||
+    parsed.port !== "4000" ||
+    parsed.pathname !== "/" ||
+    parsed.search !== "" ||
+    parsed.hash !== ""
+  ) {
+    return { ok: false, reason: "disallowed-gateway-origin" };
+  }
+  return { ok: true, url: parsed.origin };
+}
+
+function effectiveR1PhaseGate(raw: string | undefined): string {
+  return raw === R1_UNLOCKED_PHASE_GATE ? R1_UNLOCKED_PHASE_GATE : "locked";
+}
 
 function jsonResponse(body: unknown, status: number = 200): CFResponse {
   return new Response(JSON.stringify(body, null, 2), {
@@ -55,7 +94,7 @@ const handler: ExportedHandler<Env> = {
         actor: ACTOR_DID,
         nanoid: env.APP_NANOID ?? "mncprp01",
         displayName: env.APP_DISPLAY_NAME ?? "manabi · cert prep",
-        phaseGate: env.MANABI_CERT_PREP_R1_PHASE_GATE ?? "locked",
+        phaseGate: effectiveR1PhaseGate(env.MANABI_CERT_PREP_R1_PHASE_GATE),
         r1ActiveLexicons: Array.from(R1_ACTIVE_NSIDS),
         r2GatedLexicons: Array.from(R2_GATED_NSIDS),
         antiCredentialism: true,
@@ -64,11 +103,26 @@ const handler: ExportedHandler<Env> = {
       });
     }
 
-    // XRPC routes — return 503 R1-locked at W0/W1.
-    // R1 commit will replace this branch with judah LiteLLM gateway + envelope persistence.
+    // XRPC routes — fail closed on R2-gated NSIDs unconditionally, and on all
+    // other routes unless MANABI_CERT_PREP_R1_PHASE_GATE === "ratified".
     if (url.pathname.startsWith("/xrpc/")) {
-      const phase = env.MANABI_CERT_PREP_R1_PHASE_GATE ?? "locked";
-      if (phase === "locked") {
+      const nsid = url.pathname.slice("/xrpc/".length);
+      if (R2_GATED_NSIDS.has(nsid)) {
+        return jsonResponse(
+          {
+            error: "ManabiCertPrepR2PhaseGateLocked",
+            message:
+              "personalMaterialImport is R2-gated (Tier-C internalOnly boundary per ADR-2605262400 / ADR-2605264400) and disabled at W0/W1/R1.",
+            nsid,
+            phaseGate: "r2-locked",
+            adr: "2605264400",
+          },
+          503,
+        );
+      }
+
+      const phase = effectiveR1PhaseGate(env.MANABI_CERT_PREP_R1_PHASE_GATE);
+      if (phase !== R1_UNLOCKED_PHASE_GATE) {
         return jsonResponse(
           {
             error: "ManabiCertPrepR1PhaseGateLocked",
@@ -80,8 +134,25 @@ const handler: ExportedHandler<Env> = {
           503,
         );
       }
+
+      if (!R1_ACTIVE_NSIDS.has(nsid)) {
+        return jsonResponse({ error: "UnknownXrpcNsid", nsid }, 404);
+      }
+
+      const gw = validateGatewayUrl(env.MURAKUMO_LITELLM_GATEWAY_URL);
+      if (!gw.ok) {
+        return jsonResponse(
+          {
+            error: "InvalidMurakumoGatewayUrl",
+            reason: gw.reason,
+            adr: "2605215000",
+          },
+          503,
+        );
+      }
+
       // R1+ branch (placeholder; real wire lands at R1 commit)
-      return jsonResponse({ error: "NotImplementedAtW1" }, 501);
+      return jsonResponse({ error: "NotImplementedAtW1", nsid }, 501);
     }
 
     // Static asset fallthrough — entry / domain selector / study readers / history / settings

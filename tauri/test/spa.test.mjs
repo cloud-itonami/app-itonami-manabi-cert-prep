@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, readdirSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -46,8 +46,15 @@ const strip = (html) => html.replace(/<script\b[^>]*>[\s\S]*?<\/script>/giu, "")
 const bodyOf = (html) => /<body[^>]*>([\s\S]*)<\/body>/iu.exec(html)[1];
 
 test("the real build is one document that keeps every page's text, with unique ids and no dead links", () => {
-  const out = path.join(mkdtempSync(path.join(tmpdir(), "tauri-spa-")), "dist");
-  execFileSync(process.execPath, [path.join(here, "scripts/build.mjs")], { env: { ...process.env, TAURI_DIST: out }, stdio: "pipe" });
+  const outDir = mkdtempSync(path.join(tmpdir(), "tauri-spa-"));
+  const out = path.join(outDir, "dist");
+  const spaOverride = path.join(here, `.build/test-spa-${process.pid}.override.conf.json`);
+  try {
+    execFileSync(process.execPath, [path.join(here, "scripts/build.mjs")], { env: { ...process.env, TAURI_DIST: out, TAURI_OVERRIDE_CONF: spaOverride }, stdio: "pipe" });
+  } finally {
+    rmSync(spaOverride, { force: true });
+    rmSync(`${spaOverride}.owned.sha256`, { force: true });
+  }
   const html = readdirSync(out, { recursive: true }).filter((f) => String(f).endsWith(".html"));
   assert.deepEqual(html, ["index.html"]);
   const doc = readFileSync(path.join(out, "index.html"), "utf8");

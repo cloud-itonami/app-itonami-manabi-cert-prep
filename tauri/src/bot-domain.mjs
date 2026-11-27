@@ -14,8 +14,9 @@ export const maxResponseBytes = 262144;
 export const maxEvents = 20;
 
 // Every request is its own operation and needs its own trusted user choice.
-// The activity route is a bounded prefix; activityUrl builds the only shape the
-// page sends, and only for a bot id read from the assignment list.
+// The activity route uses an exact parameterized path (not an open prefix), so
+// the runtime enforces a single <=128-char ASCII :bot_id segment and the trailing
+// /activity segment; activityUrl also validates the id fail-closed.
 export const operations = [
   {
     capability, service, operation: "read-assignments", consent: "each-operation",
@@ -25,7 +26,7 @@ export const operations = [
   {
     capability, service, operation: "read-activity", consent: "each-operation",
     "data-categories": ["request-ip", "bot-id"],
-    endpoint: { origin: botsOrigin, routes: [{ method: "GET", "path-prefix": activityPrefix, "query-params": [] }] },
+    endpoint: { origin: botsOrigin, routes: [{ method: "GET", path: `${activityPrefix}:bot_id/activity`, "query-params": [] }] },
   },
 ];
 
@@ -40,12 +41,62 @@ const posInt = (x) => Number.isSafeInteger(x) && x > 0;
 const shortText = (x, n) => typeof x === "string" && x.trim() !== "" && x.length <= n;
 
 export const safeId = (x) => match(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u, x)
+  && !x.includes("..")
   && !["__proto__", "constructor", "prototype"].includes(x);
 
 export const assignmentsUrl = () => botsOrigin + assignmentsPath;
 export const activityUrl = (botId) => {
   if (!safeId(botId)) refuse("unsafe-bot-id");
   return `${botsOrigin}${activityPrefix}${botId}/activity`;
+};
+
+const utf8Encoder = new TextEncoder();
+const utf8Decoder = new TextDecoder("utf-8", { fatal: true });
+
+// Streaming byte-bounded JSON reader. Enforces maxResponseBytes on actual UTF-8
+// bytes (not UTF-16 code units) and cancels the body stream immediately if the
+// cap is exceeded, even when Content-Length is absent or spoofed.
+export const readBoundedJson = async (response, maxBytes = maxResponseBytes) => {
+  if (!posInt(maxBytes)) throw new RangeError("invalid maxBytes");
+  if (!response?.ok) throw new Error(`HTTP ${response?.status ?? "unknown"}`);
+  const rawLength = response.headers?.get?.("content-length");
+  if (rawLength != null && rawLength.trim() !== "") {
+    const declared = Number(rawLength);
+    if (!Number.isFinite(declared) || declared < 0 || declared > maxBytes) {
+      try { await response.body?.cancel?.(); } catch {}
+      throw new Error("response too large");
+    }
+  }
+  if (response.body && typeof response.body.getReader === "function") {
+    const reader = response.body.getReader();
+    const chunks = [];
+    let total = 0;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const bytes = value instanceof Uint8Array ? value : new Uint8Array(value);
+        total += bytes.byteLength;
+        if (total > maxBytes) {
+          await reader.cancel().catch(() => {});
+          throw new Error("response too large");
+        }
+        chunks.push(bytes);
+      }
+    } finally {
+      try { reader.releaseLock(); } catch {}
+    }
+    const merged = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      merged.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return JSON.parse(utf8Decoder.decode(merged));
+  }
+  const text = await response.text();
+  if (utf8Encoder.encode(text).byteLength > maxBytes) throw new Error("response too large");
+  return JSON.parse(text);
 };
 
 export const parseTime = (s) => {
@@ -125,7 +176,9 @@ export const health = (a, events, nowMs) => {
   const reasons = [];
   if (a.status !== "running") reasons.push(`status-${a.status}`);
   if (cp == null) reasons.push("no-checkpoint");
-  else if (nowMs - cp > 2 * a.intervalMs) reasons.push("checkpoint-stale");
+  else if (!natInt(cp) || !natInt(nowMs) || !posInt(a.intervalMs) || nowMs - cp < 0 || nowMs - cp > 2 * a.intervalMs) {
+    reasons.push("checkpoint-stale");
+  }
   if (events == null) reasons.push("activity-not-read");
   else if (events.length === 0) reasons.push("no-activity");
   else if (events[0].error) reasons.push("latest-event-error");
