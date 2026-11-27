@@ -8,9 +8,9 @@ import path from "node:path";
 import { descriptor, requestedCapabilities } from "../src/descriptor.mjs";
 import { clientRuntimeConnectSrc, clientRuntimeProblems } from "../vendor/kotoba-client-runtime.js";
 import {
-  OVERRIDE_CONF_REL,
   buildNativeCspFromMeta,
   nativeCspParityProblems,
+  resolveOverrideConfPath,
   validateBotsOriginOverride,
 } from "./bots-origin.mjs";
 
@@ -18,9 +18,20 @@ const here = fileURLToPath(new URL("../", import.meta.url));
 const source = path.resolve(process.env.STATIC_SRC ?? path.join(here, "../public"));
 const out = path.resolve(process.env.TAURI_DIST ?? path.join(here, "dist"));
 const confPath = path.resolve(process.env.TAURI_CONF ?? path.join(here, "src-tauri/tauri.conf.json"));
-const overrideConfPath = path.resolve(process.env.TAURI_OVERRIDE_CONF ?? path.join(here, OVERRIDE_CONF_REL));
 const sha = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const fail = (message) => { console.error(`tauri build: ${message}`); process.exit(1); };
+let overrideConf;
+try {
+  overrideConf = resolveOverrideConfPath({
+    tauriDir: here,
+    distDir: out,
+    baseConfPath: confPath,
+    rawOverrideConf: process.env.TAURI_OVERRIDE_CONF,
+  });
+} catch (err) {
+  fail(err.message);
+}
+const overrideConfPath = overrideConf.absPath;
 
 const pins = JSON.parse(await readFile(path.join(here, "vendor/PINS.json"), "utf8"));
 for (const [name, digest] of Object.entries(pins.files)) {

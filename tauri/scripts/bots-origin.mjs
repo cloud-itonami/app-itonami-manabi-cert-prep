@@ -1,5 +1,40 @@
 // Shared validation and native-vs-HTML CSP parity helpers for Tauri builds (TAURI-CSP-02).
+import path from "node:path";
+
 export const OVERRIDE_CONF_REL = ".build/tauri.override.conf.json";
+
+const isInsideDir = (target, dir) => {
+  const rel = path.relative(dir, target);
+  return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+};
+
+/**
+ * Resolve and validate the native CSP override config path shared by build.mjs
+ * and tauri-build.mjs. Rejects targets that would overwrite tauri.conf.json,
+ * write inside src-tauri/, place config inside dist/, or use non-.json paths.
+ */
+export function resolveOverrideConfPath({ tauriDir, distDir, baseConfPath, rawOverrideConf }) {
+  const rootDir = path.resolve(tauriDir);
+  const resolvedDist = path.resolve(distDir);
+  const resolvedBaseConf = path.resolve(baseConfPath);
+  const srcTauriDir = path.resolve(rootDir, "src-tauri");
+  const defaultPath = path.resolve(rootDir, OVERRIDE_CONF_REL);
+  const trimmed = String(rawOverrideConf ?? "").trim();
+  const absPath = trimmed === "" ? defaultPath : path.resolve(rootDir, trimmed);
+
+  if (!absPath.toLowerCase().endsWith(".json")) {
+    throw new Error(`TAURI_OVERRIDE_CONF must be a .json file: ${absPath}`);
+  }
+  if (absPath === resolvedBaseConf || isInsideDir(absPath, srcTauriDir)) {
+    throw new Error(`TAURI_OVERRIDE_CONF must not target src-tauri/ or tauri.conf.json: ${absPath}`);
+  }
+  if (isInsideDir(absPath, resolvedDist)) {
+    throw new Error(`TAURI_OVERRIDE_CONF must live outside dist/: ${absPath}`);
+  }
+
+  const cliArg = absPath === defaultPath ? OVERRIDE_CONF_REL : absPath;
+  return { absPath, cliArg, defaultPath, isCustom: absPath !== defaultPath };
+}
 
 const LOOPBACK_ORIGIN_RE = /^https:\/\/(127\.0\.0\.1|10\.0\.2\.2):([1-9]\d{0,4})$/u;
 

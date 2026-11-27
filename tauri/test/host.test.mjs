@@ -282,12 +282,50 @@ test("TAURI-CSP-02: MANABI_BOTS_ORIGIN validation, release block, override CSP p
     "CLI wrapper rejects MANABI_BOTS_ORIGIN + --release",
   );
 
-  // 3. Valid MANABI_BOTS_ORIGIN debug override: 100% HTML <meta> CSP <-> override config parity,
-  //    dist/ stays clean of override config, committed tauri.conf.json untouched, --config passed.
+  // 3. Valid MANABI_BOTS_ORIGIN debug override:
+  //    - default planTauriBuild (no TAURI_OVERRIDE_CONF) passes --config .build/tauri.override.conf.json
+  //    - custom TAURI_OVERRIDE_CONF passes that exact verified custom path to --config
+  //    - 100% HTML <meta> CSP <-> override config parity, dist/ stays clean, tauri.conf.json untouched.
+  const defaultOverridePlan = planTauriBuild(["build", "--debug", "--no-bundle"], {
+    MANABI_BOTS_ORIGIN: "https://127.0.0.1:18089",
+  });
+  assert.equal(defaultOverridePlan.overrideConfigArg, OVERRIDE_CONF_REL);
+  assert.equal(defaultOverridePlan.overrideConfigPath, path.resolve(here, OVERRIDE_CONF_REL));
+  assert.deepEqual(defaultOverridePlan.tauriArgs, ["build", "--debug", "--no-bundle", "--config", OVERRIDE_CONF_REL]);
+
+  // Unsafe TAURI_OVERRIDE_CONF targets are rejected fail-closed by both planTauriBuild and build.mjs
+  const unsafeDir = mkdtempSync(path.join(tmpdir(), "tauri-unsafe-conf-"));
+  const unsafeDist = path.join(unsafeDir, "dist");
+  for (const [label, badTarget] of [
+    ["tauri.conf.json itself", path.join(here, "src-tauri/tauri.conf.json")],
+    ["file inside src-tauri/", path.join(here, "src-tauri/override.json")],
+    ["file inside dist/", path.join(unsafeDist, "tauri.override.conf.json")],
+    ["non-json file", path.join(unsafeDir, "override.txt")],
+  ]) {
+    assert.throws(
+      () => planTauriBuild(["build", "--debug", "--no-bundle"], {
+        MANABI_BOTS_ORIGIN: "https://127.0.0.1:18089",
+        TAURI_DIST: unsafeDist,
+        TAURI_OVERRIDE_CONF: badTarget,
+      }),
+      /TAURI_OVERRIDE_CONF/u,
+      `planTauriBuild rejects ${label}`,
+    );
+    const f = fixture();
+    assert.throws(
+      () => build(f.src, unsafeDist, {
+        MANABI_BOTS_ORIGIN: "https://127.0.0.1:18089",
+        TAURI_OVERRIDE_CONF: badTarget,
+      }),
+      /tauri build/u,
+      `build.mjs rejects ${label}`,
+    );
+  }
+
   const prodConfBefore = readFileSync(path.join(here, "src-tauri/tauri.conf.json"), "utf8");
   const workDir = mkdtempSync(path.join(tmpdir(), "tauri-wrap-ok-"));
   const distDir = path.join(workDir, "dist");
-  const overridePath = path.join(workDir, ".build/tauri.override.conf.json");
+  const overridePath = path.join(workDir, "custom-override.conf.json");
   const dryOverrideOut = execFileSync(
     process.execPath,
     [path.join(here, "scripts/tauri-build.mjs"), "android", "build", "--debug", "--apk", "--target", "x86_64"],
@@ -304,10 +342,11 @@ test("TAURI-CSP-02: MANABI_BOTS_ORIGIN validation, release block, override CSP p
   );
   const dryOverridePlan = JSON.parse(dryOverrideOut.trim().split("\n").at(-1));
   assert.equal(dryOverridePlan.overrideOrigin, "https://127.0.0.1:18089");
-  assert.equal(dryOverridePlan.overrideConfig, OVERRIDE_CONF_REL);
+  assert.equal(dryOverridePlan.overrideConfig, overridePath);
+  assert.equal(dryOverridePlan.overrideConfigPath, overridePath);
   assert.deepEqual(dryOverridePlan.tauriArgs, [
     "android", "build", "--debug", "--apk", "--target", "x86_64",
-    "--config", OVERRIDE_CONF_REL,
+    "--config", overridePath,
   ]);
   assert.equal(existsSync(overridePath), true, "override config written outside dist/");
   assert.equal(existsSync(path.join(distDir, "tauri.override.conf.json")), false, "override config not placed inside dist/");
@@ -327,7 +366,49 @@ test("TAURI-CSP-02: MANABI_BOTS_ORIGIN validation, release block, override CSP p
     "HTML <meta> CSP and override native CSP must match 100%",
   );
 
-  // 4. Stale override cleanup on non-override build and --config omitted.
+  // 4. Regression: `npm run build:desktop:debug` dry-run with custom TAURI_OVERRIDE_CONF
+  //    generates ONLY the custom file, passes that exact path to --config (not the default),
+  //    and the file referenced by --config exists on disk with matching CSP.
+  const desktopDir = mkdtempSync(path.join(tmpdir(), "tauri-desktop-debug-"));
+  const desktopDist = path.join(desktopDir, "dist");
+  const desktopCustomConf = path.join(desktopDir, "desktop-stub.conf.json");
+  const defaultConfPath = path.resolve(here, OVERRIDE_CONF_REL);
+  const defaultExistedBefore = existsSync(defaultConfPath);
+  const npmBin = process.platform === "win32" ? "npm.cmd" : "npm";
+  const desktopDryOut = execFileSync(npmBin, ["run", "--silent", "build:desktop:debug"], {
+    cwd: here,
+    env: {
+      ...process.env,
+      MANABI_BOTS_ORIGIN: "https://127.0.0.1:18089",
+      TAURI_DIST: desktopDist,
+      TAURI_OVERRIDE_CONF: desktopCustomConf,
+      TAURI_BUILD_DRY_RUN: "1",
+    },
+    encoding: "utf8",
+  });
+  const desktopPlan = JSON.parse(desktopDryOut.trim().split("\n").at(-1));
+  const configFlagIdx = desktopPlan.tauriArgs.indexOf("--config");
+  assert.ok(configFlagIdx >= 0, "tauriArgs must include --config");
+  const passedConfigArg = desktopPlan.tauriArgs[configFlagIdx + 1];
+  assert.equal(passedConfigArg, desktopCustomConf, "--config must point to the exact custom TAURI_OVERRIDE_CONF");
+  assert.notEqual(passedConfigArg, OVERRIDE_CONF_REL, "--config must not fall back to the default override path");
+  assert.equal(existsSync(passedConfigArg), true, "file referenced by --config must exist on disk");
+  assert.equal(existsSync(defaultConfPath), defaultExistedBefore, "default override path must not be created when custom path is used");
+  const desktopHtml = readFileSync(path.join(desktopDist, "index.html"), "utf8");
+  const desktopMetaCsp = desktopHtml.match(/Content-Security-Policy" content="([^"]+)"/)[1];
+  const desktopConfJson = JSON.parse(readFileSync(passedConfigArg, "utf8"));
+  assert.deepEqual(
+    nativeCspParityProblems({
+      nativeCsp: desktopConfJson?.app?.security?.csp,
+      metaCsp: desktopMetaCsp,
+      expectedConnectSrc: "connect-src 'self' https://127.0.0.1:18089 ipc: http://ipc.localhost",
+      strictStyleMatch: true,
+    }),
+    [],
+    "desktop:debug --config file must match dist/index.html meta CSP 100%",
+  );
+
+  // 5. Stale override cleanup on non-override build and --config omitted.
   assert.equal(existsSync(overridePath), true);
   const dryDefaultOut = execFileSync(
     process.execPath,

@@ -10,7 +10,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { OVERRIDE_CONF_REL, validateBotsOriginOverride } from "./bots-origin.mjs";
+import { resolveOverrideConfPath, validateBotsOriginOverride } from "./bots-origin.mjs";
 
 const here = fileURLToPath(new URL("../", import.meta.url));
 
@@ -27,8 +27,16 @@ export function isReleaseOrSigningArgs(args) {
 export function planTauriBuild(args, env = process.env) {
   const allowEmulatorHost = env.MANABI_BOTS_ALLOW_EMULATOR_HOST === "1";
   const overrideOrigin = validateBotsOriginOverride(env.MANABI_BOTS_ORIGIN, { allowEmulatorHost });
-  const overrideConfigRel = OVERRIDE_CONF_REL;
-  const overrideConfigPath = path.resolve(env.TAURI_OVERRIDE_CONF ?? path.join(here, overrideConfigRel));
+  const distDir = path.resolve(env.TAURI_DIST ?? path.join(here, "dist"));
+  const baseConfPath = path.resolve(env.TAURI_CONF ?? path.join(here, "src-tauri/tauri.conf.json"));
+  const resolvedOverride = resolveOverrideConfPath({
+    tauriDir: here,
+    distDir,
+    baseConfPath,
+    rawOverrideConf: env.TAURI_OVERRIDE_CONF,
+  });
+  const overrideConfigArg = resolvedOverride.cliArg;
+  const overrideConfigPath = resolvedOverride.absPath;
   if (overrideOrigin) {
     if (isReleaseOrSigningArgs(args)) {
       throw new Error("MANABI_BOTS_ORIGIN override is forbidden for release/signing builds (pass --debug for local stub builds)");
@@ -37,8 +45,8 @@ export function planTauriBuild(args, env = process.env) {
       throw new Error("cannot combine MANABI_BOTS_ORIGIN with an explicit --config flag");
     }
   }
-  const tauriArgs = overrideOrigin ? [...args, "--config", overrideConfigRel] : [...args];
-  return { overrideOrigin, overrideConfigRel, overrideConfigPath, tauriArgs };
+  const tauriArgs = overrideOrigin ? [...args, "--config", overrideConfigArg] : [...args];
+  return { overrideOrigin, overrideConfigArg, overrideConfigPath, tauriArgs };
 }
 
 function resolveTauriBinary() {
@@ -56,7 +64,7 @@ function main() {
     process.exit(1);
   }
 
-  // Run the static frontend build (writes or cleans .build/tauri.override.conf.json and verifies parity).
+  // Run the static frontend build (writes or cleans the resolved override config and verifies parity).
   execFileSync(process.execPath, [path.join(here, "scripts/build.mjs")], {
     cwd: here,
     env: process.env,
@@ -75,7 +83,8 @@ function main() {
   if (process.env.TAURI_BUILD_DRY_RUN === "1") {
     console.log(JSON.stringify({
       overrideOrigin: plan.overrideOrigin,
-      overrideConfig: plan.overrideOrigin ? plan.overrideConfigRel : null,
+      overrideConfig: plan.overrideOrigin ? plan.overrideConfigArg : null,
+      overrideConfigPath: plan.overrideOrigin ? plan.overrideConfigPath : null,
       tauriArgs: plan.tauriArgs,
     }));
     return;
