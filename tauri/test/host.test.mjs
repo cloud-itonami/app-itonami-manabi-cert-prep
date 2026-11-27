@@ -389,6 +389,9 @@ test("TAURI-CSP-02: MANABI_BOTS_ORIGIN validation, release block, override CSP p
   const extraKeyPath = path.join(here, extraKeyRel);
   const tamperedRel = nextBuildOverrideRel("tampered");
   const tamperedPath = path.join(here, tamperedRel);
+  const orphanMarkerRel = nextBuildOverrideRel("orphan-marker");
+  const orphanMarkerConfPath = path.join(here, orphanMarkerRel);
+  const orphanMarkerPath = overrideOwnershipMarkerPath(orphanMarkerConfPath);
   const symlinkRel = nextBuildOverrideRel("symlink");
   const symlinkPath = path.join(here, symlinkRel);
   try {
@@ -399,6 +402,8 @@ test("TAURI-CSP-02: MANABI_BOTS_ORIGIN validation, release block, override CSP p
     writeFileSync(unownedPath, unownedBody);
     const extraKeyBody = JSON.stringify({ app: { security: { csp: "default-src 'none'" }, extra: true } }) + "\n";
     writeFileSync(extraKeyPath, extraKeyBody);
+    const orphanMarkerBody = `${"a".repeat(64)}\n`;
+    writeFileSync(orphanMarkerPath, orphanMarkerBody);
     symlinkSync(pkgJsonPath, symlinkPath);
 
     for (const [label, targetRel, targetAbs, expectedBody] of [
@@ -422,6 +427,25 @@ test("TAURI-CSP-02: MANABI_BOTS_ORIGIN validation, release block, override CSP p
       assert.equal(existsSync(targetAbs), true, `${label} not deleted after refused default build`);
       assert.equal(readFileSync(targetAbs, "utf8"), expectedBody, `${label} unchanged after refused default build`);
     }
+
+    // Standalone orphan .owned.sha256 marker with NO config body must fail closed without being overwritten or deleted
+    assert.equal(existsSync(orphanMarkerConfPath), false);
+    assert.throws(() => assertOwnedOverrideConfFile(orphanMarkerConfPath), /orphan ownership marker/u);
+    const fOrphan = fixture();
+    assert.throws(
+      () => build(fOrphan.src, unsafeDist, { MANABI_BOTS_ORIGIN: "https://127.0.0.1:18089", TAURI_OVERRIDE_CONF: orphanMarkerRel }),
+      /orphan ownership marker/u,
+      "debug override refuses to overwrite standalone orphan .owned.sha256 marker",
+    );
+    assert.equal(existsSync(orphanMarkerConfPath), false, "config body not created on orphan marker failure");
+    assert.equal(readFileSync(orphanMarkerPath, "utf8"), orphanMarkerBody, "orphan marker byte-identical after refused override");
+    assert.throws(
+      () => build(fOrphan.src, unsafeDist, { MANABI_BOTS_ORIGIN: "", TAURI_OVERRIDE_CONF: orphanMarkerRel }),
+      /orphan ownership marker/u,
+      "default build refuses to delete standalone orphan .owned.sha256 marker",
+    );
+    assert.equal(existsSync(orphanMarkerPath), true, "orphan marker not deleted after refused default build");
+    assert.equal(readFileSync(orphanMarkerPath, "utf8"), orphanMarkerBody, "orphan marker byte-identical after refused default build");
 
     // Build-created override config that was subsequently edited by a human must fail ownership digest check
     const fTamper = fixture();
@@ -455,7 +479,7 @@ test("TAURI-CSP-02: MANABI_BOTS_ORIGIN validation, release block, override CSP p
     );
     assert.equal(readFileSync(pkgJsonPath, "utf8"), pkgJsonBefore, "symlink target package.json must remain byte-identical");
   } finally {
-    for (const p of [handwrittenPath, unownedPath, extraKeyPath, tamperedPath, symlinkPath]) {
+    for (const p of [handwrittenPath, unownedPath, extraKeyPath, tamperedPath, orphanMarkerConfPath, symlinkPath]) {
       rmSync(p, { force: true });
       rmSync(overrideOwnershipMarkerPath(p), { force: true });
     }

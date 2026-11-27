@@ -118,7 +118,9 @@ export function assertOwnedOverrideConfFile(absPath) {
     st = lstatSync(absPath);
   } catch (err) {
     if (err?.code === "ENOENT") {
-      assertMarkerNotSymlink(markerPath);
+      if (assertMarkerNotSymlink(markerPath)) {
+        throw new Error(`refusing to overwrite or remove orphan ownership marker without matching override config: ${markerPath}`);
+      }
       return false;
     }
     throw err;
@@ -149,7 +151,7 @@ export function assertOwnedOverrideConfFile(absPath) {
 
 /**
  * Write a build-owned override config and its `.owned.sha256` sidecar after
- * verifying that any pre-existing target is build-owned.
+ * verifying that either neither file exists or both exist as a valid owned pair.
  */
 export function writeOwnedOverrideConf(absPath, csp) {
   assertOwnedOverrideConfFile(absPath);
@@ -163,13 +165,13 @@ export function writeOwnedOverrideConf(absPath, csp) {
 
 /**
  * Remove a build-owned override config and its `.owned.sha256` sidecar after
- * verifying ownership. Fails closed without deleting any unowned file.
+ * verifying ownership. Fails closed without deleting any unowned or orphan file.
  */
 export function removeOwnedOverrideConf(absPath) {
   const existed = assertOwnedOverrideConfFile(absPath);
-  const markerPath = overrideOwnershipMarkerPath(absPath);
-  if (existed) rmSync(absPath, { force: true });
-  if (assertMarkerNotSymlink(markerPath)) rmSync(markerPath, { force: true });
+  if (!existed) return;
+  rmSync(absPath, { force: true });
+  rmSync(overrideOwnershipMarkerPath(absPath), { force: true });
 }
 
 const LOOPBACK_ORIGIN_RE = /^https:\/\/(127\.0\.0\.1|10\.0\.2\.2):([1-9]\d{0,4})$/u;
