@@ -11,6 +11,7 @@ import {
   OVERRIDE_CONF_REL,
   assertOwnedOverrideConfFile,
   nativeCspParityProblems,
+  overrideOwnershipMarkerPath,
   resolveOverrideConfPath,
   validateBotsOriginOverride,
 } from "../scripts/bots-origin.mjs";
@@ -51,7 +52,10 @@ const build = (src, out, extraEnv = {}) => {
       },
     );
   } finally {
-    if (!hasExplicitOverride) rmSync(autoOverridePath, { force: true });
+    if (!hasExplicitOverride) {
+      rmSync(autoOverridePath, { force: true });
+      rmSync(overrideOwnershipMarkerPath(autoOverridePath), { force: true });
+    }
   }
 };
 
@@ -373,16 +377,24 @@ test("TAURI-CSP-02: MANABI_BOTS_ORIGIN validation, release block, override CSP p
   }
   assert.equal(readFileSync(pkgJsonPath, "utf8"), pkgJsonBefore, "tauri/package.json must remain byte-identical");
 
-  // Ownership check: an existing non-override JSON or symlink inside .build/ matching *.override.conf.json
+  // Ownership check: handwritten minimal CSP-only config, arbitrary JSON, extra-key JSON,
+  // tampered build-owned config, or symlink inside .build/ matching *.override.conf.json
   // must fail closed without being overwritten (debug override) or deleted (default non-override).
   mkdirSync(path.join(here, ".build"), { recursive: true });
+  const handwrittenRel = nextBuildOverrideRel("handwritten");
+  const handwrittenPath = path.join(here, handwrittenRel);
   const unownedRel = nextBuildOverrideRel("unowned");
   const unownedPath = path.join(here, unownedRel);
   const extraKeyRel = nextBuildOverrideRel("extrakey");
   const extraKeyPath = path.join(here, extraKeyRel);
+  const tamperedRel = nextBuildOverrideRel("tampered");
+  const tamperedPath = path.join(here, tamperedRel);
   const symlinkRel = nextBuildOverrideRel("symlink");
   const symlinkPath = path.join(here, symlinkRel);
   try {
+    // Minimal handwritten valid Tauri CSP-only config with NO build ownership sidecar
+    const handwrittenBody = JSON.stringify({ app: { security: { csp: "default-src 'none'" } } }, null, 2) + "\n";
+    writeFileSync(handwrittenPath, handwrittenBody);
     const unownedBody = JSON.stringify({ owner: "external", keep: true }, null, 2) + "\n";
     writeFileSync(unownedPath, unownedBody);
     const extraKeyBody = JSON.stringify({ app: { security: { csp: "default-src 'none'" }, extra: true } }) + "\n";
@@ -390,6 +402,7 @@ test("TAURI-CSP-02: MANABI_BOTS_ORIGIN validation, release block, override CSP p
     symlinkSync(pkgJsonPath, symlinkPath);
 
     for (const [label, targetRel, targetAbs, expectedBody] of [
+      ["handwritten minimal CSP-only config inside .build/", handwrittenRel, handwrittenPath, handwrittenBody],
       ["arbitrary JSON inside .build/", unownedRel, unownedPath, unownedBody],
       ["extra-key JSON inside .build/", extraKeyRel, extraKeyPath, extraKeyBody],
     ]) {
@@ -410,6 +423,24 @@ test("TAURI-CSP-02: MANABI_BOTS_ORIGIN validation, release block, override CSP p
       assert.equal(readFileSync(targetAbs, "utf8"), expectedBody, `${label} unchanged after refused default build`);
     }
 
+    // Build-created override config that was subsequently edited by a human must fail ownership digest check
+    const fTamper = fixture();
+    build(fTamper.src, unsafeDist, { MANABI_BOTS_ORIGIN: "https://127.0.0.1:18089", TAURI_OVERRIDE_CONF: tamperedRel });
+    assert.equal(existsSync(overrideOwnershipMarkerPath(tamperedPath)), true);
+    const editedBody = JSON.stringify({ app: { security: { csp: "default-src 'none'; connect-src 'self'" } } }, null, 2) + "\n";
+    writeFileSync(tamperedPath, editedBody);
+    assert.throws(() => assertOwnedOverrideConfFile(tamperedPath), /ownership digest mismatch/u);
+    assert.throws(
+      () => build(fTamper.src, unsafeDist, { MANABI_BOTS_ORIGIN: "https://127.0.0.1:18090", TAURI_OVERRIDE_CONF: tamperedRel }),
+      /ownership digest mismatch/u,
+    );
+    assert.equal(readFileSync(tamperedPath, "utf8"), editedBody, "edited override config preserved on debug override");
+    assert.throws(
+      () => build(fTamper.src, unsafeDist, { MANABI_BOTS_ORIGIN: "", TAURI_OVERRIDE_CONF: tamperedRel }),
+      /ownership digest mismatch/u,
+    );
+    assert.equal(readFileSync(tamperedPath, "utf8"), editedBody, "edited override config preserved on default build");
+
     // Symlink inside .build/ pointing to package.json must be rejected without touching package.json
     const fSym = fixture();
     assert.throws(
@@ -424,9 +455,10 @@ test("TAURI-CSP-02: MANABI_BOTS_ORIGIN validation, release block, override CSP p
     );
     assert.equal(readFileSync(pkgJsonPath, "utf8"), pkgJsonBefore, "symlink target package.json must remain byte-identical");
   } finally {
-    rmSync(unownedPath, { force: true });
-    rmSync(extraKeyPath, { force: true });
-    rmSync(symlinkPath, { force: true });
+    for (const p of [handwrittenPath, unownedPath, extraKeyPath, tamperedPath, symlinkPath]) {
+      rmSync(p, { force: true });
+      rmSync(overrideOwnershipMarkerPath(p), { force: true });
+    }
   }
 
   const prodConfBefore = readFileSync(path.join(here, "src-tauri/tauri.conf.json"), "utf8");
@@ -520,8 +552,32 @@ test("TAURI-CSP-02: MANABI_BOTS_ORIGIN validation, release block, override CSP p
       "desktop:debug --config file must match dist/index.html meta CSP 100%",
     );
 
-    // 5. Stale owned override cleanup on non-override build and --config omitted.
+    // 5. Genuine build-created override config lifecycle:
+    //    build #2 cleanly overwrites build #1's owned override + updates its .owned.sha256 sidecar,
+    //    and non-override build #3 cleanly removes both files and omits --config.
     assert.equal(existsSync(overridePath), true);
+    assert.equal(existsSync(overrideOwnershipMarkerPath(overridePath)), true);
+    const markerBefore = readFileSync(overrideOwnershipMarkerPath(overridePath), "utf8");
+    const dryOverwriteOut = execFileSync(
+      process.execPath,
+      [path.join(here, "scripts/tauri-build.mjs"), "android", "build", "--debug", "--apk", "--target", "x86_64"],
+      {
+        env: {
+          ...process.env,
+          MANABI_BOTS_ORIGIN: "https://127.0.0.1:18090",
+          TAURI_DIST: distDir,
+          TAURI_OVERRIDE_CONF: overrideRel,
+          TAURI_BUILD_DRY_RUN: "1",
+        },
+        encoding: "utf8",
+      },
+    );
+    const dryOverwritePlan = JSON.parse(dryOverwriteOut.trim().split("\n").at(-1));
+    assert.equal(dryOverwritePlan.overrideOrigin, "https://127.0.0.1:18090");
+    assert.match(readFileSync(overridePath, "utf8"), /https:\/\/127\.0\.0\.1:18090/u);
+    assert.notEqual(readFileSync(overrideOwnershipMarkerPath(overridePath), "utf8"), markerBefore);
+    assert.equal(assertOwnedOverrideConfFile(overridePath), true);
+
     const dryDefaultOut = execFileSync(
       process.execPath,
       [path.join(here, "scripts/tauri-build.mjs"), "android", "build", "--debug", "--apk", "--target", "x86_64"],
@@ -541,8 +597,11 @@ test("TAURI-CSP-02: MANABI_BOTS_ORIGIN validation, release block, override CSP p
     assert.equal(dryDefaultPlan.overrideConfig, null);
     assert.deepEqual(dryDefaultPlan.tauriArgs, ["android", "build", "--debug", "--apk", "--target", "x86_64"]);
     assert.equal(existsSync(overridePath), false, "stale owned override config must be removed on default build");
+    assert.equal(existsSync(overrideOwnershipMarkerPath(overridePath)), false, "ownership sidecar must be removed on default build");
   } finally {
     rmSync(overridePath, { force: true });
+    rmSync(overrideOwnershipMarkerPath(overridePath), { force: true });
     rmSync(desktopCustomPath, { force: true });
+    rmSync(overrideOwnershipMarkerPath(desktopCustomPath), { force: true });
   }
 });

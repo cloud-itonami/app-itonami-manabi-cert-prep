@@ -1,10 +1,15 @@
 // Shared validation and native-vs-HTML CSP parity helpers for Tauri builds (TAURI-CSP-02).
-import { lstatSync, readFileSync, realpathSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 export const OVERRIDE_CONF_REL = ".build/tauri.override.conf.json";
 
 const OVERRIDE_FILENAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\.override\.conf\.json$/u;
+
+const sha256Hex = (bytes) => createHash("sha256").update(bytes).digest("hex");
+
+export const overrideOwnershipMarkerPath = (absPath) => `${absPath}.owned.sha256`;
 
 const isInsideDir = (target, dir) => {
   const rel = path.relative(dir, target);
@@ -66,10 +71,10 @@ export function resolveOverrideConfPath({ tauriDir, distDir, baseConfPath, rawOv
 }
 
 /**
- * Strictly match build-generated override config shape:
- * `{"app":{"security":{"csp":"<non-empty string>"}}}` with no extra keys.
+ * Validate override config JSON shape ONLY (never sufficient by itself to prove
+ * build ownership; ownership requires a matching .owned.sha256 sidecar).
  */
-export function isOwnedOverrideConfObject(value) {
+export function isOverrideConfShape(value) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
   const topKeys = Object.keys(value);
   if (topKeys.length !== 1 || topKeys[0] !== "app") return false;
@@ -84,33 +89,87 @@ export function isOwnedOverrideConfObject(value) {
   return typeof sec.csp === "string" && sec.csp.trim() !== "";
 }
 
+function assertMarkerNotSymlink(markerPath) {
+  let mst;
+  try {
+    mst = lstatSync(markerPath);
+  } catch (err) {
+    if (err?.code === "ENOENT") return false;
+    throw err;
+  }
+  if (mst.isSymbolicLink() || !mst.isFile()) {
+    throw new Error(`refusing to trust symlink or non-regular ownership marker: ${markerPath}`);
+  }
+  return true;
+}
+
 /**
  * Ownership check before overwriting or removing an existing override config.
- * Returns false if the file does not exist; returns true if it exists and is
- * a regular non-symlink file with the exact build-generated CSP override shape;
- * otherwise throws fail-closed without modifying or deleting the file.
+ * Ownership is NEVER inferred from JSON shape alone: an existing file MUST be a
+ * regular non-symlink file, carry valid override config shape, AND match the
+ * SHA-256 digest recorded in its build-owned `<file>.owned.sha256` sidecar.
+ * Returns false if the file does not exist; returns true if build-owned;
+ * otherwise throws fail-closed without modifying or deleting any file.
  */
 export function assertOwnedOverrideConfFile(absPath) {
+  const markerPath = overrideOwnershipMarkerPath(absPath);
   let st;
   try {
     st = lstatSync(absPath);
   } catch (err) {
-    if (err?.code === "ENOENT") return false;
+    if (err?.code === "ENOENT") {
+      assertMarkerNotSymlink(markerPath);
+      return false;
+    }
     throw err;
   }
   if (st.isSymbolicLink() || !st.isFile()) {
     throw new Error(`refusing to modify symlink or non-regular override config: ${absPath}`);
   }
+  const rawBytes = readFileSync(absPath);
   let parsed;
   try {
-    parsed = JSON.parse(readFileSync(absPath, "utf8"));
+    parsed = JSON.parse(rawBytes.toString("utf8"));
   } catch {
     throw new Error(`refusing to overwrite or remove non-JSON override config: ${absPath}`);
   }
-  if (!isOwnedOverrideConfObject(parsed)) {
+  if (!isOverrideConfShape(parsed)) {
     throw new Error(`refusing to overwrite or remove unowned override config: ${absPath}`);
   }
+  if (!assertMarkerNotSymlink(markerPath)) {
+    throw new Error(`refusing to overwrite or remove unowned override config (missing build ownership marker): ${absPath}`);
+  }
+  const recorded = readFileSync(markerPath, "utf8").trim();
+  const actual = sha256Hex(rawBytes);
+  if (!/^[0-9a-f]{64}$/u.test(recorded) || recorded !== actual) {
+    throw new Error(`refusing to overwrite or remove unowned override config (ownership digest mismatch): ${absPath}`);
+  }
   return true;
+}
+
+/**
+ * Write a build-owned override config and its `.owned.sha256` sidecar after
+ * verifying that any pre-existing target is build-owned.
+ */
+export function writeOwnedOverrideConf(absPath, csp) {
+  assertOwnedOverrideConfFile(absPath);
+  const markerPath = overrideOwnershipMarkerPath(absPath);
+  const content = JSON.stringify({ app: { security: { csp } } }, null, 2) + "\n";
+  const digest = sha256Hex(Buffer.from(content, "utf8"));
+  mkdirSync(path.dirname(absPath), { recursive: true });
+  writeFileSync(absPath, content);
+  writeFileSync(markerPath, `${digest}\n`);
+}
+
+/**
+ * Remove a build-owned override config and its `.owned.sha256` sidecar after
+ * verifying ownership. Fails closed without deleting any unowned file.
+ */
+export function removeOwnedOverrideConf(absPath) {
+  const existed = assertOwnedOverrideConfFile(absPath);
+  const markerPath = overrideOwnershipMarkerPath(absPath);
+  if (existed) rmSync(absPath, { force: true });
+  if (assertMarkerNotSymlink(markerPath)) rmSync(markerPath, { force: true });
 }
 
 const LOOPBACK_ORIGIN_RE = /^https:\/\/(127\.0\.0\.1|10\.0\.2\.2):([1-9]\d{0,4})$/u;

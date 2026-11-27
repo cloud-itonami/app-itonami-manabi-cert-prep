@@ -8,11 +8,12 @@ import path from "node:path";
 import { descriptor, requestedCapabilities } from "../src/descriptor.mjs";
 import { clientRuntimeConnectSrc, clientRuntimeProblems } from "../vendor/kotoba-client-runtime.js";
 import {
-  assertOwnedOverrideConfFile,
   buildNativeCspFromMeta,
   nativeCspParityProblems,
+  removeOwnedOverrideConf,
   resolveOverrideConfPath,
   validateBotsOriginOverride,
+  writeOwnedOverrideConf,
 } from "./bots-origin.mjs";
 
 const here = fileURLToPath(new URL("../", import.meta.url));
@@ -183,19 +184,17 @@ for (const rel of htmlFiles) {
   await writeFile(path.join(out, rel), html);
 }
 
-// TAURI-CSP-02: verify ownership before writing or cleaning the native CSP override
-// config inside .build/ (outside dist/), then verify 100% native-vs-HTML CSP parity.
+// TAURI-CSP-02: verify build ownership via `.owned.sha256` sidecar before writing
+// or cleaning the native CSP override config inside .build/, then verify 100% parity.
 try {
-  assertOwnedOverrideConfFile(overrideConfPath);
+  if (botsOriginOverride) {
+    const overrideCsp = buildNativeCspFromMeta(indexMetaCsp);
+    writeOwnedOverrideConf(overrideConfPath, overrideCsp);
+  } else {
+    removeOwnedOverrideConf(overrideConfPath);
+  }
 } catch (err) {
   fail(err.message);
-}
-if (botsOriginOverride) {
-  const overrideCsp = buildNativeCspFromMeta(indexMetaCsp);
-  await mkdir(path.dirname(overrideConfPath), { recursive: true });
-  await writeFile(overrideConfPath, JSON.stringify({ app: { security: { csp: overrideCsp } } }, null, 2) + "\n");
-} else {
-  await rm(overrideConfPath, { force: true });
 }
 const effectiveNativeConfPath = botsOriginOverride ? overrideConfPath : confPath;
 const effectiveNativeConf = JSON.parse(await readFile(effectiveNativeConfPath, "utf8"));

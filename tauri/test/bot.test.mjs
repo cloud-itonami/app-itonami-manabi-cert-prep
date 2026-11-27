@@ -140,7 +140,9 @@ test("only the two declared GET routes are allowed; CSP equals the runtime deriv
     assert.match(stubNativeConf.app.security.csp, /connect-src 'self' https:\/\/127\.0\.0\.1:18089 ipc: http:\/\/ipc\.localhost;/u);
   } finally {
     rmSync(botDefaultOverride, { force: true });
+    rmSync(`${botDefaultOverride}.owned.sha256`, { force: true });
     rmSync(stubOverride, { force: true });
+    rmSync(`${stubOverride}.owned.sha256`, { force: true });
   }
 });
 

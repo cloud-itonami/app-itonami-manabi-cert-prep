@@ -53,6 +53,7 @@ test("the real build is one document that keeps every page's text, with unique i
     execFileSync(process.execPath, [path.join(here, "scripts/build.mjs")], { env: { ...process.env, TAURI_DIST: out, TAURI_OVERRIDE_CONF: spaOverride }, stdio: "pipe" });
   } finally {
     rmSync(spaOverride, { force: true });
+    rmSync(`${spaOverride}.owned.sha256`, { force: true });
   }
   const html = readdirSync(out, { recursive: true }).filter((f) => String(f).endsWith(".html"));
   assert.deepEqual(html, ["index.html"]);

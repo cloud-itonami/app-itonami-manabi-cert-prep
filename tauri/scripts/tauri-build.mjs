@@ -10,7 +10,12 @@ import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { resolveOverrideConfPath, validateBotsOriginOverride } from "./bots-origin.mjs";
+import {
+  assertOwnedOverrideConfFile,
+  overrideOwnershipMarkerPath,
+  resolveOverrideConfPath,
+  validateBotsOriginOverride,
+} from "./bots-origin.mjs";
 
 const here = fileURLToPath(new URL("../", import.meta.url));
 
@@ -71,11 +76,19 @@ function main() {
     stdio: "inherit",
   });
 
-  if (plan.overrideOrigin && !existsSync(plan.overrideConfigPath)) {
-    console.error(`tauri build wrapper: expected override config was not generated: ${plan.overrideConfigPath}`);
-    process.exit(1);
-  }
-  if (!plan.overrideOrigin && existsSync(plan.overrideConfigPath)) {
+  if (plan.overrideOrigin) {
+    let owned = false;
+    try {
+      owned = assertOwnedOverrideConfFile(plan.overrideConfigPath);
+    } catch (err) {
+      console.error(`tauri build wrapper: ${err.message}`);
+      process.exit(1);
+    }
+    if (!owned) {
+      console.error(`tauri build wrapper: expected override config was not generated: ${plan.overrideConfigPath}`);
+      process.exit(1);
+    }
+  } else if (existsSync(plan.overrideConfigPath) || existsSync(overrideOwnershipMarkerPath(plan.overrideConfigPath))) {
     console.error(`tauri build wrapper: stale override config still present on non-override build: ${plan.overrideConfigPath}`);
     process.exit(1);
   }
