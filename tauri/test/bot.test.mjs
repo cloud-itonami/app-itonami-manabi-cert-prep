@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -102,40 +102,46 @@ test("only the two declared GET routes are allowed; CSP equals the runtime deriv
 
   const outDir = mkdtempSync(path.join(tmpdir(), "tauri-bot-"));
   const out = path.join(outDir, "dist");
-  execFileSync(process.execPath, [path.join(here, "scripts/build.mjs")], {
-    env: { ...process.env, TAURI_DIST: out, TAURI_OVERRIDE_CONF: path.join(outDir, ".build/tauri.override.conf.json") },
-    stdio: "pipe",
-  });
-  const derived = clientRuntimeConnectSrc(descriptor, requestedCapabilities(descriptor), [], ["https://tauri.localhost"]);
-  assert.equal(derived, `connect-src ${d.botsOrigin}`);
-  // One document (KOTOBA-159): the bot page is a section of index.html.
-  const html = readFileSync(path.join(out, "index.html"), "utf8");
-  assert.match(html, /connect-src 'self' https:\/\/bots\.itonami\.cloud ipc: http:\/\/ipc\.localhost;/u);
-  assert.match(html, /<section data-page="\/bot\.html"[^>]* hidden>/u);
-  assert.equal(existsSync(path.join(out, "bot.html")), false);
-  assert.match(readFileSync(path.join(out, "index.html"), "utf8"), /<a href="\/bot\.html">bot<\/a>/u);
-  assert.deepEqual(json(path.relative(here, path.join(out, "bot-profile.json"))), profile);
-  const release = JSON.parse(readFileSync(path.join(out, "release.json"), "utf8"));
-  for (const f of ["bot.js", "bot-domain.js", "bot-profile.json", "spa.js"]) assert.ok(release.files[f], f);
-
-  // Build-time override: MANABI_BOTS_ORIGIN points the bundle at a local stub;
-  // the committed default stays production (checked above + by import below).
-  assert.equal(d.botsOrigin, "https://bots.itonami.cloud");
+  const botDefaultOverride = path.join(here, `.build/test-bot-default-${process.pid}.override.conf.json`);
   const stubDir = mkdtempSync(path.join(tmpdir(), "tauri-bot-stub-"));
   const stubOut = path.join(stubDir, "dist");
-  const stubOverride = path.join(stubDir, ".build/tauri.override.conf.json");
-  execFileSync(process.execPath, [path.join(here, "scripts/build.mjs")],
-    { env: { ...process.env, TAURI_DIST: stubOut, TAURI_OVERRIDE_CONF: stubOverride, MANABI_BOTS_ORIGIN: "https://127.0.0.1:18089" }, stdio: "pipe" });
-  const stubDomain = readFileSync(path.join(stubOut, "bot-domain.js"), "utf8");
-  assert.match(stubDomain, /export const botsOrigin = "https:\/\/127\.0\.0\.1:18089";/u);
-  const stubHtml = readFileSync(path.join(stubOut, "index.html"), "utf8");
-  assert.match(stubHtml, /connect-src 'self' https:\/\/127\.0\.0\.1:18089 ipc: http:\/\/ipc\.localhost;/u);
-  assert.match(stubHtml, /接続先: https:\/\/127\.0\.0\.1:18089/u);
-  assert.doesNotMatch(stubHtml, /bots\.itonami\.cloud/u);
-  const stubDesc = JSON.parse(readFileSync(path.join(stubOut, "descriptor.json"), "utf8"));
-  assert.ok(stubDesc.operations.every((o) => o.endpoint.origin === "https://127.0.0.1:18089"));
-  const stubNativeConf = JSON.parse(readFileSync(stubOverride, "utf8"));
-  assert.match(stubNativeConf.app.security.csp, /connect-src 'self' https:\/\/127\.0\.0\.1:18089 ipc: http:\/\/ipc\.localhost;/u);
+  const stubOverride = path.join(here, `.build/test-bot-stub-${process.pid}.override.conf.json`);
+  try {
+    execFileSync(process.execPath, [path.join(here, "scripts/build.mjs")], {
+      env: { ...process.env, TAURI_DIST: out, TAURI_OVERRIDE_CONF: botDefaultOverride },
+      stdio: "pipe",
+    });
+    const derived = clientRuntimeConnectSrc(descriptor, requestedCapabilities(descriptor), [], ["https://tauri.localhost"]);
+    assert.equal(derived, `connect-src ${d.botsOrigin}`);
+    // One document (KOTOBA-159): the bot page is a section of index.html.
+    const html = readFileSync(path.join(out, "index.html"), "utf8");
+    assert.match(html, /connect-src 'self' https:\/\/bots\.itonami\.cloud ipc: http:\/\/ipc\.localhost;/u);
+    assert.match(html, /<section data-page="\/bot\.html"[^>]* hidden>/u);
+    assert.equal(existsSync(path.join(out, "bot.html")), false);
+    assert.match(readFileSync(path.join(out, "index.html"), "utf8"), /<a href="\/bot\.html">bot<\/a>/u);
+    assert.deepEqual(json(path.relative(here, path.join(out, "bot-profile.json"))), profile);
+    const release = JSON.parse(readFileSync(path.join(out, "release.json"), "utf8"));
+    for (const f of ["bot.js", "bot-domain.js", "bot-profile.json", "spa.js"]) assert.ok(release.files[f], f);
+
+    // Build-time override: MANABI_BOTS_ORIGIN points the bundle at a local stub;
+    // the committed default stays production (checked above + by import below).
+    assert.equal(d.botsOrigin, "https://bots.itonami.cloud");
+    execFileSync(process.execPath, [path.join(here, "scripts/build.mjs")],
+      { env: { ...process.env, TAURI_DIST: stubOut, TAURI_OVERRIDE_CONF: stubOverride, MANABI_BOTS_ORIGIN: "https://127.0.0.1:18089" }, stdio: "pipe" });
+    const stubDomain = readFileSync(path.join(stubOut, "bot-domain.js"), "utf8");
+    assert.match(stubDomain, /export const botsOrigin = "https:\/\/127\.0\.0\.1:18089";/u);
+    const stubHtml = readFileSync(path.join(stubOut, "index.html"), "utf8");
+    assert.match(stubHtml, /connect-src 'self' https:\/\/127\.0\.0\.1:18089 ipc: http:\/\/ipc\.localhost;/u);
+    assert.match(stubHtml, /接続先: https:\/\/127\.0\.0\.1:18089/u);
+    assert.doesNotMatch(stubHtml, /bots\.itonami\.cloud/u);
+    const stubDesc = JSON.parse(readFileSync(path.join(stubOut, "descriptor.json"), "utf8"));
+    assert.ok(stubDesc.operations.every((o) => o.endpoint.origin === "https://127.0.0.1:18089"));
+    const stubNativeConf = JSON.parse(readFileSync(stubOverride, "utf8"));
+    assert.match(stubNativeConf.app.security.csp, /connect-src 'self' https:\/\/127\.0\.0\.1:18089 ipc: http:\/\/ipc\.localhost;/u);
+  } finally {
+    rmSync(botDefaultOverride, { force: true });
+    rmSync(stubOverride, { force: true });
+  }
 });
 
 test("ZB12-011: health checkpoint-stale exact 2x intervalMs boundary and negative/future timestamps", () => {

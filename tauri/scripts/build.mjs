@@ -8,6 +8,7 @@ import path from "node:path";
 import { descriptor, requestedCapabilities } from "../src/descriptor.mjs";
 import { clientRuntimeConnectSrc, clientRuntimeProblems } from "../vendor/kotoba-client-runtime.js";
 import {
+  assertOwnedOverrideConfFile,
   buildNativeCspFromMeta,
   nativeCspParityProblems,
   resolveOverrideConfPath,
@@ -182,8 +183,13 @@ for (const rel of htmlFiles) {
   await writeFile(path.join(out, rel), html);
 }
 
-// TAURI-CSP-02: write or clean the native CSP override config outside dist/,
-// then verify 100% native-vs-HTML CSP parity unconditionally (never skipped).
+// TAURI-CSP-02: verify ownership before writing or cleaning the native CSP override
+// config inside .build/ (outside dist/), then verify 100% native-vs-HTML CSP parity.
+try {
+  assertOwnedOverrideConfFile(overrideConfPath);
+} catch (err) {
+  fail(err.message);
+}
 if (botsOriginOverride) {
   const overrideCsp = buildNativeCspFromMeta(indexMetaCsp);
   await mkdir(path.dirname(overrideConfPath), { recursive: true });

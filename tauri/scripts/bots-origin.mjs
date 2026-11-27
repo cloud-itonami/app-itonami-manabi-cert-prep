@@ -1,7 +1,10 @@
 // Shared validation and native-vs-HTML CSP parity helpers for Tauri builds (TAURI-CSP-02).
+import { lstatSync, readFileSync, realpathSync } from "node:fs";
 import path from "node:path";
 
 export const OVERRIDE_CONF_REL = ".build/tauri.override.conf.json";
+
+const OVERRIDE_FILENAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\.override\.conf\.json$/u;
 
 const isInsideDir = (target, dir) => {
   const rel = path.relative(dir, target);
@@ -10,30 +13,104 @@ const isInsideDir = (target, dir) => {
 
 /**
  * Resolve and validate the native CSP override config path shared by build.mjs
- * and tauri-build.mjs. Rejects targets that would overwrite tauri.conf.json,
- * write inside src-tauri/, place config inside dist/, or use non-.json paths.
+ * and tauri-build.mjs. Strictly limited to a direct regular file inside
+ * `<tauriDir>/.build/` matching `*.override.conf.json`, rejecting symlinks,
+ * path escapes, arbitrary JSON files (e.g. package.json), src-tauri/, and dist/.
  */
 export function resolveOverrideConfPath({ tauriDir, distDir, baseConfPath, rawOverrideConf }) {
   const rootDir = path.resolve(tauriDir);
   const resolvedDist = path.resolve(distDir);
   const resolvedBaseConf = path.resolve(baseConfPath);
-  const srcTauriDir = path.resolve(rootDir, "src-tauri");
+  const buildDir = path.resolve(rootDir, ".build");
   const defaultPath = path.resolve(rootDir, OVERRIDE_CONF_REL);
   const trimmed = String(rawOverrideConf ?? "").trim();
   const absPath = trimmed === "" ? defaultPath : path.resolve(rootDir, trimmed);
 
-  if (!absPath.toLowerCase().endsWith(".json")) {
-    throw new Error(`TAURI_OVERRIDE_CONF must be a .json file: ${absPath}`);
+  if (path.dirname(absPath) !== buildDir) {
+    throw new Error(`TAURI_OVERRIDE_CONF must reside directly inside .build/: ${absPath}`);
   }
-  if (absPath === resolvedBaseConf || isInsideDir(absPath, srcTauriDir)) {
-    throw new Error(`TAURI_OVERRIDE_CONF must not target src-tauri/ or tauri.conf.json: ${absPath}`);
+  const base = path.basename(absPath);
+  if (!OVERRIDE_FILENAME_RE.test(base) || base.includes("..")) {
+    throw new Error(`TAURI_OVERRIDE_CONF filename must match <name>.override.conf.json: ${base}`);
   }
-  if (isInsideDir(absPath, resolvedDist)) {
-    throw new Error(`TAURI_OVERRIDE_CONF must live outside dist/: ${absPath}`);
+  if (absPath === resolvedBaseConf || isInsideDir(absPath, resolvedDist)) {
+    throw new Error(`TAURI_OVERRIDE_CONF must not target tauri.conf.json or dist/: ${absPath}`);
   }
 
-  const cliArg = absPath === defaultPath ? OVERRIDE_CONF_REL : absPath;
-  return { absPath, cliArg, defaultPath, isCustom: absPath !== defaultPath };
+  // Reject symlinked .build directory or symlink/non-regular target file.
+  try {
+    const buildStat = lstatSync(buildDir);
+    if (buildStat.isSymbolicLink() || !buildStat.isDirectory()) {
+      throw new Error(`TAURI_OVERRIDE_CONF parent .build must be a real directory: ${buildDir}`);
+    }
+    const realRoot = realpathSync(rootDir);
+    const realBuild = realpathSync(buildDir);
+    if (realBuild !== path.join(realRoot, ".build")) {
+      throw new Error(`TAURI_OVERRIDE_CONF .build escapes tauri root: ${realBuild}`);
+    }
+  } catch (err) {
+    if (err?.code !== "ENOENT") throw err;
+  }
+
+  try {
+    const fileStat = lstatSync(absPath);
+    if (fileStat.isSymbolicLink() || !fileStat.isFile()) {
+      throw new Error(`TAURI_OVERRIDE_CONF target must not be a symlink or non-regular file: ${absPath}`);
+    }
+  } catch (err) {
+    if (err?.code !== "ENOENT") throw err;
+  }
+
+  const cliArg = path.posix.join(".build", base);
+  return { absPath, cliArg, defaultPath, buildDir, isCustom: absPath !== defaultPath };
+}
+
+/**
+ * Strictly match build-generated override config shape:
+ * `{"app":{"security":{"csp":"<non-empty string>"}}}` with no extra keys.
+ */
+export function isOwnedOverrideConfObject(value) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const topKeys = Object.keys(value);
+  if (topKeys.length !== 1 || topKeys[0] !== "app") return false;
+  const app = value.app;
+  if (app === null || typeof app !== "object" || Array.isArray(app)) return false;
+  const appKeys = Object.keys(app);
+  if (appKeys.length !== 1 || appKeys[0] !== "security") return false;
+  const sec = app.security;
+  if (sec === null || typeof sec !== "object" || Array.isArray(sec)) return false;
+  const secKeys = Object.keys(sec);
+  if (secKeys.length !== 1 || secKeys[0] !== "csp") return false;
+  return typeof sec.csp === "string" && sec.csp.trim() !== "";
+}
+
+/**
+ * Ownership check before overwriting or removing an existing override config.
+ * Returns false if the file does not exist; returns true if it exists and is
+ * a regular non-symlink file with the exact build-generated CSP override shape;
+ * otherwise throws fail-closed without modifying or deleting the file.
+ */
+export function assertOwnedOverrideConfFile(absPath) {
+  let st;
+  try {
+    st = lstatSync(absPath);
+  } catch (err) {
+    if (err?.code === "ENOENT") return false;
+    throw err;
+  }
+  if (st.isSymbolicLink() || !st.isFile()) {
+    throw new Error(`refusing to modify symlink or non-regular override config: ${absPath}`);
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(readFileSync(absPath, "utf8"));
+  } catch {
+    throw new Error(`refusing to overwrite or remove non-JSON override config: ${absPath}`);
+  }
+  if (!isOwnedOverrideConfObject(parsed)) {
+    throw new Error(`refusing to overwrite or remove unowned override config: ${absPath}`);
+  }
+  return true;
 }
 
 const LOOPBACK_ORIGIN_RE = /^https:\/\/(127\.0\.0\.1|10\.0\.2\.2):([1-9]\d{0,4})$/u;

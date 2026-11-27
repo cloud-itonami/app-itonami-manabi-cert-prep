@@ -1,16 +1,24 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { clientRuntimeConnectSrc, clientRuntimeProblems } from "../vendor/kotoba-client-runtime.js";
 import { descriptor, requestedCapabilities } from "../src/descriptor.mjs";
-import { OVERRIDE_CONF_REL, nativeCspParityProblems, validateBotsOriginOverride } from "../scripts/bots-origin.mjs";
+import {
+  OVERRIDE_CONF_REL,
+  assertOwnedOverrideConfFile,
+  nativeCspParityProblems,
+  resolveOverrideConfPath,
+  validateBotsOriginOverride,
+} from "../scripts/bots-origin.mjs";
 import { planTauriBuild } from "../scripts/tauri-build.mjs";
 
 const here = fileURLToPath(new URL("../", import.meta.url));
+let testConfSeq = 0;
+const nextBuildOverrideRel = (label) => `.build/test-host-${label}-${process.pid}-${++testConfSeq}.override.conf.json`;
 const fixture = () => {
   const dir = mkdtempSync(path.join(tmpdir(), "tauri-fixture-"));
   mkdirSync(path.join(dir, "in/sub"), { recursive: true });
@@ -21,23 +29,31 @@ const fixture = () => {
     dir,
     src: path.join(dir, "in"),
     out: path.join(dir, "out"),
-    overrideConf: path.join(dir, ".build/tauri.override.conf.json"),
   };
 };
-const build = (src, out, extraEnv = {}) => execFileSync(
-  process.execPath,
-  [path.join(here, "scripts/build.mjs")],
-  {
-    env: {
-      ...process.env,
-      STATIC_SRC: src,
-      TAURI_DIST: out,
-      TAURI_OVERRIDE_CONF: path.join(path.dirname(out), ".build/tauri.override.conf.json"),
-      ...extraEnv,
-    },
-    stdio: "pipe",
-  },
-);
+const build = (src, out, extraEnv = {}) => {
+  const hasExplicitOverride = Object.hasOwn(extraEnv, "TAURI_OVERRIDE_CONF");
+  const autoOverrideRel = nextBuildOverrideRel("fx");
+  const autoOverridePath = path.join(here, autoOverrideRel);
+  try {
+    return execFileSync(
+      process.execPath,
+      [path.join(here, "scripts/build.mjs")],
+      {
+        env: {
+          ...process.env,
+          STATIC_SRC: src,
+          TAURI_DIST: out,
+          ...(hasExplicitOverride ? {} : { TAURI_OVERRIDE_CONF: autoOverrideRel }),
+          ...extraEnv,
+        },
+        stdio: "pipe",
+      },
+    );
+  } finally {
+    if (!hasExplicitOverride) rmSync(autoOverridePath, { force: true });
+  }
+};
 
 test("descriptor is valid for the shared runtime and every operation is each-operation consent", () => {
   assert.deepEqual(clientRuntimeProblems(descriptor, requestedCapabilities(descriptor), ["https://tauri.localhost"]), []);
@@ -267,13 +283,14 @@ test("TAURI-CSP-02: MANABI_BOTS_ORIGIN validation, release block, override CSP p
     );
   }
   const relDir = mkdtempSync(path.join(tmpdir(), "tauri-wrap-rel-"));
+  const relOverrideRel = nextBuildOverrideRel("rel");
   assert.throws(
     () => execFileSync(process.execPath, [path.join(here, "scripts/tauri-build.mjs"), "android", "build", "--release", "--apk"], {
       env: {
         ...process.env,
         MANABI_BOTS_ORIGIN: "https://127.0.0.1:18089",
         TAURI_DIST: path.join(relDir, "dist"),
-        TAURI_OVERRIDE_CONF: path.join(relDir, ".build/tauri.override.conf.json"),
+        TAURI_OVERRIDE_CONF: relOverrideRel,
         TAURI_BUILD_DRY_RUN: "1",
       },
       stdio: "pipe",
@@ -284,7 +301,7 @@ test("TAURI-CSP-02: MANABI_BOTS_ORIGIN validation, release block, override CSP p
 
   // 3. Valid MANABI_BOTS_ORIGIN debug override:
   //    - default planTauriBuild (no TAURI_OVERRIDE_CONF) passes --config .build/tauri.override.conf.json
-  //    - custom TAURI_OVERRIDE_CONF passes that exact verified custom path to --config
+  //    - custom TAURI_OVERRIDE_CONF inside .build/*.override.conf.json passes that exact verified path to --config
   //    - 100% HTML <meta> CSP <-> override config parity, dist/ stays clean, tauri.conf.json untouched.
   const defaultOverridePlan = planTauriBuild(["build", "--debug", "--no-bundle"], {
     MANABI_BOTS_ORIGIN: "https://127.0.0.1:18089",
@@ -293,15 +310,40 @@ test("TAURI-CSP-02: MANABI_BOTS_ORIGIN validation, release block, override CSP p
   assert.equal(defaultOverridePlan.overrideConfigPath, path.resolve(here, OVERRIDE_CONF_REL));
   assert.deepEqual(defaultOverridePlan.tauriArgs, ["build", "--debug", "--no-bundle", "--config", OVERRIDE_CONF_REL]);
 
-  // Unsafe TAURI_OVERRIDE_CONF targets are rejected fail-closed by both planTauriBuild and build.mjs
+  // Unsafe / non-owned TAURI_OVERRIDE_CONF targets (including package.json, PINS.json, tsconfig.json,
+  // paths outside .build/, wrong suffix, traversal, and symlinks) are rejected fail-closed by
+  // resolveOverrideConfPath, planTauriBuild, and build.mjs — and existing files stay byte-identical
+  // across BOTH debug override builds AND normal non-override builds.
   const unsafeDir = mkdtempSync(path.join(tmpdir(), "tauri-unsafe-conf-"));
   const unsafeDist = path.join(unsafeDir, "dist");
+  const pkgJsonPath = path.join(here, "package.json");
+  const pkgJsonBefore = readFileSync(pkgJsonPath, "utf8");
   for (const [label, badTarget] of [
+    ["project package.json (relative)", "package.json"],
+    ["project package.json (absolute)", pkgJsonPath],
+    ["root package.json", "../package.json"],
+    ["root tsconfig.json", "../tsconfig.json"],
+    ["vendor PINS.json", "vendor/PINS.json"],
     ["tauri.conf.json itself", path.join(here, "src-tauri/tauri.conf.json")],
     ["file inside src-tauri/", path.join(here, "src-tauri/override.json")],
     ["file inside dist/", path.join(unsafeDist, "tauri.override.conf.json")],
+    ["path traversal out of .build/", ".build/../package.json"],
+    ["non-override json inside .build/", ".build/arbitrary.json"],
+    ["nested subdir inside .build/", ".build/sub/a.override.conf.json"],
+    ["double-dot in filename", ".build/a..b.override.conf.json"],
+    ["outside .build/ with matching suffix", path.join(unsafeDir, "outside.override.conf.json")],
     ["non-json file", path.join(unsafeDir, "override.txt")],
   ]) {
+    assert.throws(
+      () => resolveOverrideConfPath({
+        tauriDir: here,
+        distDir: unsafeDist,
+        baseConfPath: path.join(here, "src-tauri/tauri.conf.json"),
+        rawOverrideConf: badTarget,
+      }),
+      /TAURI_OVERRIDE_CONF/u,
+      `resolveOverrideConfPath rejects ${label}`,
+    );
     assert.throws(
       () => planTauriBuild(["build", "--debug", "--no-bundle"], {
         MANABI_BOTS_ORIGIN: "https://127.0.0.1:18089",
@@ -318,115 +360,189 @@ test("TAURI-CSP-02: MANABI_BOTS_ORIGIN validation, release block, override CSP p
         TAURI_OVERRIDE_CONF: badTarget,
       }),
       /tauri build/u,
-      `build.mjs rejects ${label}`,
+      `build.mjs (override) rejects ${label}`,
     );
+    assert.throws(
+      () => build(f.src, unsafeDist, {
+        MANABI_BOTS_ORIGIN: "",
+        TAURI_OVERRIDE_CONF: badTarget,
+      }),
+      /tauri build/u,
+      `build.mjs (default) rejects ${label}`,
+    );
+  }
+  assert.equal(readFileSync(pkgJsonPath, "utf8"), pkgJsonBefore, "tauri/package.json must remain byte-identical");
+
+  // Ownership check: an existing non-override JSON or symlink inside .build/ matching *.override.conf.json
+  // must fail closed without being overwritten (debug override) or deleted (default non-override).
+  mkdirSync(path.join(here, ".build"), { recursive: true });
+  const unownedRel = nextBuildOverrideRel("unowned");
+  const unownedPath = path.join(here, unownedRel);
+  const extraKeyRel = nextBuildOverrideRel("extrakey");
+  const extraKeyPath = path.join(here, extraKeyRel);
+  const symlinkRel = nextBuildOverrideRel("symlink");
+  const symlinkPath = path.join(here, symlinkRel);
+  try {
+    const unownedBody = JSON.stringify({ owner: "external", keep: true }, null, 2) + "\n";
+    writeFileSync(unownedPath, unownedBody);
+    const extraKeyBody = JSON.stringify({ app: { security: { csp: "default-src 'none'" }, extra: true } }) + "\n";
+    writeFileSync(extraKeyPath, extraKeyBody);
+    symlinkSync(pkgJsonPath, symlinkPath);
+
+    for (const [label, targetRel, targetAbs, expectedBody] of [
+      ["arbitrary JSON inside .build/", unownedRel, unownedPath, unownedBody],
+      ["extra-key JSON inside .build/", extraKeyRel, extraKeyPath, extraKeyBody],
+    ]) {
+      assert.throws(() => assertOwnedOverrideConfFile(targetAbs), /unowned/u, label);
+      const f = fixture();
+      assert.throws(
+        () => build(f.src, unsafeDist, { MANABI_BOTS_ORIGIN: "https://127.0.0.1:18089", TAURI_OVERRIDE_CONF: targetRel }),
+        /unowned/u,
+        `debug override refuses to overwrite ${label}`,
+      );
+      assert.equal(readFileSync(targetAbs, "utf8"), expectedBody, `${label} unchanged after refused override`);
+      assert.throws(
+        () => build(f.src, unsafeDist, { MANABI_BOTS_ORIGIN: "", TAURI_OVERRIDE_CONF: targetRel }),
+        /unowned/u,
+        `default build refuses to delete ${label}`,
+      );
+      assert.equal(existsSync(targetAbs), true, `${label} not deleted after refused default build`);
+      assert.equal(readFileSync(targetAbs, "utf8"), expectedBody, `${label} unchanged after refused default build`);
+    }
+
+    // Symlink inside .build/ pointing to package.json must be rejected without touching package.json
+    const fSym = fixture();
+    assert.throws(
+      () => build(fSym.src, unsafeDist, { MANABI_BOTS_ORIGIN: "https://127.0.0.1:18089", TAURI_OVERRIDE_CONF: symlinkRel }),
+      /symlink/u,
+      "debug override rejects symlink in .build/",
+    );
+    assert.throws(
+      () => build(fSym.src, unsafeDist, { MANABI_BOTS_ORIGIN: "", TAURI_OVERRIDE_CONF: symlinkRel }),
+      /symlink/u,
+      "default build rejects symlink in .build/",
+    );
+    assert.equal(readFileSync(pkgJsonPath, "utf8"), pkgJsonBefore, "symlink target package.json must remain byte-identical");
+  } finally {
+    rmSync(unownedPath, { force: true });
+    rmSync(extraKeyPath, { force: true });
+    rmSync(symlinkPath, { force: true });
   }
 
   const prodConfBefore = readFileSync(path.join(here, "src-tauri/tauri.conf.json"), "utf8");
   const workDir = mkdtempSync(path.join(tmpdir(), "tauri-wrap-ok-"));
   const distDir = path.join(workDir, "dist");
-  const overridePath = path.join(workDir, "custom-override.conf.json");
-  const dryOverrideOut = execFileSync(
-    process.execPath,
-    [path.join(here, "scripts/tauri-build.mjs"), "android", "build", "--debug", "--apk", "--target", "x86_64"],
-    {
+  const overrideRel = nextBuildOverrideRel("wrap");
+  const overridePath = path.join(here, overrideRel);
+  const desktopDir = mkdtempSync(path.join(tmpdir(), "tauri-desktop-debug-"));
+  const desktopDist = path.join(desktopDir, "dist");
+  const desktopCustomRel = nextBuildOverrideRel("desktop-stub");
+  const desktopCustomPath = path.join(here, desktopCustomRel);
+  try {
+    const dryOverrideOut = execFileSync(
+      process.execPath,
+      [path.join(here, "scripts/tauri-build.mjs"), "android", "build", "--debug", "--apk", "--target", "x86_64"],
+      {
+        env: {
+          ...process.env,
+          MANABI_BOTS_ORIGIN: "https://127.0.0.1:18089",
+          TAURI_DIST: distDir,
+          TAURI_OVERRIDE_CONF: overrideRel,
+          TAURI_BUILD_DRY_RUN: "1",
+        },
+        encoding: "utf8",
+      },
+    );
+    const dryOverridePlan = JSON.parse(dryOverrideOut.trim().split("\n").at(-1));
+    assert.equal(dryOverridePlan.overrideOrigin, "https://127.0.0.1:18089");
+    assert.equal(dryOverridePlan.overrideConfig, overrideRel);
+    assert.equal(dryOverridePlan.overrideConfigPath, overridePath);
+    assert.deepEqual(dryOverridePlan.tauriArgs, [
+      "android", "build", "--debug", "--apk", "--target", "x86_64",
+      "--config", overrideRel,
+    ]);
+    assert.equal(existsSync(overridePath), true, "override config written inside .build/");
+    assert.equal(existsSync(path.join(distDir, "tauri.override.conf.json")), false, "override config not placed inside dist/");
+    assert.equal(readFileSync(path.join(here, "src-tauri/tauri.conf.json"), "utf8"), prodConfBefore, "tauri.conf.json remains immutable");
+
+    const html = readFileSync(path.join(distDir, "index.html"), "utf8");
+    const metaCsp = html.match(/Content-Security-Policy" content="([^"]+)"/)[1];
+    const overrideConf = JSON.parse(readFileSync(overridePath, "utf8"));
+    assert.deepEqual(
+      nativeCspParityProblems({
+        nativeCsp: overrideConf?.app?.security?.csp,
+        metaCsp,
+        expectedConnectSrc: "connect-src 'self' https://127.0.0.1:18089 ipc: http://ipc.localhost",
+        strictStyleMatch: true,
+      }),
+      [],
+      "HTML <meta> CSP and override native CSP must match 100%",
+    );
+
+    // 4. Regression: `npm run build:desktop:debug` dry-run with custom .build/<name>.override.conf.json
+    //    generates ONLY the custom file, passes that exact path to --config (not the default),
+    //    and the file referenced by --config exists on disk with matching CSP.
+    const defaultConfPath = path.resolve(here, OVERRIDE_CONF_REL);
+    const defaultExistedBefore = existsSync(defaultConfPath);
+    const npmBin = process.platform === "win32" ? "npm.cmd" : "npm";
+    const desktopDryOut = execFileSync(npmBin, ["run", "--silent", "build:desktop:debug"], {
+      cwd: here,
       env: {
         ...process.env,
         MANABI_BOTS_ORIGIN: "https://127.0.0.1:18089",
-        TAURI_DIST: distDir,
-        TAURI_OVERRIDE_CONF: overridePath,
+        TAURI_DIST: desktopDist,
+        TAURI_OVERRIDE_CONF: desktopCustomRel,
         TAURI_BUILD_DRY_RUN: "1",
       },
       encoding: "utf8",
-    },
-  );
-  const dryOverridePlan = JSON.parse(dryOverrideOut.trim().split("\n").at(-1));
-  assert.equal(dryOverridePlan.overrideOrigin, "https://127.0.0.1:18089");
-  assert.equal(dryOverridePlan.overrideConfig, overridePath);
-  assert.equal(dryOverridePlan.overrideConfigPath, overridePath);
-  assert.deepEqual(dryOverridePlan.tauriArgs, [
-    "android", "build", "--debug", "--apk", "--target", "x86_64",
-    "--config", overridePath,
-  ]);
-  assert.equal(existsSync(overridePath), true, "override config written outside dist/");
-  assert.equal(existsSync(path.join(distDir, "tauri.override.conf.json")), false, "override config not placed inside dist/");
-  assert.equal(readFileSync(path.join(here, "src-tauri/tauri.conf.json"), "utf8"), prodConfBefore, "tauri.conf.json remains immutable");
+    });
+    const desktopPlan = JSON.parse(desktopDryOut.trim().split("\n").at(-1));
+    const configFlagIdx = desktopPlan.tauriArgs.indexOf("--config");
+    assert.ok(configFlagIdx >= 0, "tauriArgs must include --config");
+    const passedConfigArg = desktopPlan.tauriArgs[configFlagIdx + 1];
+    assert.equal(passedConfigArg, desktopCustomRel, "--config must point to the exact custom TAURI_OVERRIDE_CONF");
+    assert.notEqual(passedConfigArg, OVERRIDE_CONF_REL, "--config must not fall back to the default override path");
+    const resolvedPassedConfig = path.resolve(here, passedConfigArg);
+    assert.equal(resolvedPassedConfig, desktopCustomPath);
+    assert.equal(existsSync(resolvedPassedConfig), true, "file referenced by --config must exist on disk");
+    assert.equal(existsSync(defaultConfPath), defaultExistedBefore, "default override path must not be created when custom path is used");
+    const desktopHtml = readFileSync(path.join(desktopDist, "index.html"), "utf8");
+    const desktopMetaCsp = desktopHtml.match(/Content-Security-Policy" content="([^"]+)"/)[1];
+    const desktopConfJson = JSON.parse(readFileSync(resolvedPassedConfig, "utf8"));
+    assert.deepEqual(
+      nativeCspParityProblems({
+        nativeCsp: desktopConfJson?.app?.security?.csp,
+        metaCsp: desktopMetaCsp,
+        expectedConnectSrc: "connect-src 'self' https://127.0.0.1:18089 ipc: http://ipc.localhost",
+        strictStyleMatch: true,
+      }),
+      [],
+      "desktop:debug --config file must match dist/index.html meta CSP 100%",
+    );
 
-  const html = readFileSync(path.join(distDir, "index.html"), "utf8");
-  const metaCsp = html.match(/Content-Security-Policy" content="([^"]+)"/)[1];
-  const overrideConf = JSON.parse(readFileSync(overridePath, "utf8"));
-  assert.deepEqual(
-    nativeCspParityProblems({
-      nativeCsp: overrideConf?.app?.security?.csp,
-      metaCsp,
-      expectedConnectSrc: "connect-src 'self' https://127.0.0.1:18089 ipc: http://ipc.localhost",
-      strictStyleMatch: true,
-    }),
-    [],
-    "HTML <meta> CSP and override native CSP must match 100%",
-  );
-
-  // 4. Regression: `npm run build:desktop:debug` dry-run with custom TAURI_OVERRIDE_CONF
-  //    generates ONLY the custom file, passes that exact path to --config (not the default),
-  //    and the file referenced by --config exists on disk with matching CSP.
-  const desktopDir = mkdtempSync(path.join(tmpdir(), "tauri-desktop-debug-"));
-  const desktopDist = path.join(desktopDir, "dist");
-  const desktopCustomConf = path.join(desktopDir, "desktop-stub.conf.json");
-  const defaultConfPath = path.resolve(here, OVERRIDE_CONF_REL);
-  const defaultExistedBefore = existsSync(defaultConfPath);
-  const npmBin = process.platform === "win32" ? "npm.cmd" : "npm";
-  const desktopDryOut = execFileSync(npmBin, ["run", "--silent", "build:desktop:debug"], {
-    cwd: here,
-    env: {
-      ...process.env,
-      MANABI_BOTS_ORIGIN: "https://127.0.0.1:18089",
-      TAURI_DIST: desktopDist,
-      TAURI_OVERRIDE_CONF: desktopCustomConf,
-      TAURI_BUILD_DRY_RUN: "1",
-    },
-    encoding: "utf8",
-  });
-  const desktopPlan = JSON.parse(desktopDryOut.trim().split("\n").at(-1));
-  const configFlagIdx = desktopPlan.tauriArgs.indexOf("--config");
-  assert.ok(configFlagIdx >= 0, "tauriArgs must include --config");
-  const passedConfigArg = desktopPlan.tauriArgs[configFlagIdx + 1];
-  assert.equal(passedConfigArg, desktopCustomConf, "--config must point to the exact custom TAURI_OVERRIDE_CONF");
-  assert.notEqual(passedConfigArg, OVERRIDE_CONF_REL, "--config must not fall back to the default override path");
-  assert.equal(existsSync(passedConfigArg), true, "file referenced by --config must exist on disk");
-  assert.equal(existsSync(defaultConfPath), defaultExistedBefore, "default override path must not be created when custom path is used");
-  const desktopHtml = readFileSync(path.join(desktopDist, "index.html"), "utf8");
-  const desktopMetaCsp = desktopHtml.match(/Content-Security-Policy" content="([^"]+)"/)[1];
-  const desktopConfJson = JSON.parse(readFileSync(passedConfigArg, "utf8"));
-  assert.deepEqual(
-    nativeCspParityProblems({
-      nativeCsp: desktopConfJson?.app?.security?.csp,
-      metaCsp: desktopMetaCsp,
-      expectedConnectSrc: "connect-src 'self' https://127.0.0.1:18089 ipc: http://ipc.localhost",
-      strictStyleMatch: true,
-    }),
-    [],
-    "desktop:debug --config file must match dist/index.html meta CSP 100%",
-  );
-
-  // 5. Stale override cleanup on non-override build and --config omitted.
-  assert.equal(existsSync(overridePath), true);
-  const dryDefaultOut = execFileSync(
-    process.execPath,
-    [path.join(here, "scripts/tauri-build.mjs"), "android", "build", "--debug", "--apk", "--target", "x86_64"],
-    {
-      env: {
-        ...process.env,
-        MANABI_BOTS_ORIGIN: "",
-        TAURI_DIST: distDir,
-        TAURI_OVERRIDE_CONF: overridePath,
-        TAURI_BUILD_DRY_RUN: "1",
+    // 5. Stale owned override cleanup on non-override build and --config omitted.
+    assert.equal(existsSync(overridePath), true);
+    const dryDefaultOut = execFileSync(
+      process.execPath,
+      [path.join(here, "scripts/tauri-build.mjs"), "android", "build", "--debug", "--apk", "--target", "x86_64"],
+      {
+        env: {
+          ...process.env,
+          MANABI_BOTS_ORIGIN: "",
+          TAURI_DIST: distDir,
+          TAURI_OVERRIDE_CONF: overrideRel,
+          TAURI_BUILD_DRY_RUN: "1",
+        },
+        encoding: "utf8",
       },
-      encoding: "utf8",
-    },
-  );
-  const dryDefaultPlan = JSON.parse(dryDefaultOut.trim().split("\n").at(-1));
-  assert.equal(dryDefaultPlan.overrideOrigin, null);
-  assert.equal(dryDefaultPlan.overrideConfig, null);
-  assert.deepEqual(dryDefaultPlan.tauriArgs, ["android", "build", "--debug", "--apk", "--target", "x86_64"]);
-  assert.equal(existsSync(overridePath), false, "stale override config must be removed on default build");
+    );
+    const dryDefaultPlan = JSON.parse(dryDefaultOut.trim().split("\n").at(-1));
+    assert.equal(dryDefaultPlan.overrideOrigin, null);
+    assert.equal(dryDefaultPlan.overrideConfig, null);
+    assert.deepEqual(dryDefaultPlan.tauriArgs, ["android", "build", "--debug", "--apk", "--target", "x86_64"]);
+    assert.equal(existsSync(overridePath), false, "stale owned override config must be removed on default build");
+  } finally {
+    rmSync(overridePath, { force: true });
+    rmSync(desktopCustomPath, { force: true });
+  }
 });
