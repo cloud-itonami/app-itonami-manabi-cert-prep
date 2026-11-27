@@ -100,8 +100,12 @@ test("only the two declared GET routes are allowed; CSP equals the runtime deriv
   assert.equal(allowed("https://evil.example/v1/grok-bots/businesses", "GET"), false);
   assert.ok(descriptor.operations.every((o) => o.consent === "each-operation"));
 
-  const out = path.join(mkdtempSync(path.join(tmpdir(), "tauri-bot-")), "dist");
-  execFileSync(process.execPath, [path.join(here, "scripts/build.mjs")], { env: { ...process.env, TAURI_DIST: out }, stdio: "pipe" });
+  const outDir = mkdtempSync(path.join(tmpdir(), "tauri-bot-"));
+  const out = path.join(outDir, "dist");
+  execFileSync(process.execPath, [path.join(here, "scripts/build.mjs")], {
+    env: { ...process.env, TAURI_DIST: out, TAURI_OVERRIDE_CONF: path.join(outDir, ".build/tauri.override.conf.json") },
+    stdio: "pipe",
+  });
   const derived = clientRuntimeConnectSrc(descriptor, requestedCapabilities(descriptor), [], ["https://tauri.localhost"]);
   assert.equal(derived, `connect-src ${d.botsOrigin}`);
   // One document (KOTOBA-159): the bot page is a section of index.html.
@@ -117,9 +121,11 @@ test("only the two declared GET routes are allowed; CSP equals the runtime deriv
   // Build-time override: MANABI_BOTS_ORIGIN points the bundle at a local stub;
   // the committed default stays production (checked above + by import below).
   assert.equal(d.botsOrigin, "https://bots.itonami.cloud");
-  const stubOut = path.join(mkdtempSync(path.join(tmpdir(), "tauri-bot-stub-")), "dist");
+  const stubDir = mkdtempSync(path.join(tmpdir(), "tauri-bot-stub-"));
+  const stubOut = path.join(stubDir, "dist");
+  const stubOverride = path.join(stubDir, ".build/tauri.override.conf.json");
   execFileSync(process.execPath, [path.join(here, "scripts/build.mjs")],
-    { env: { ...process.env, TAURI_DIST: stubOut, MANABI_BOTS_ORIGIN: "https://127.0.0.1:18089" }, stdio: "pipe" });
+    { env: { ...process.env, TAURI_DIST: stubOut, TAURI_OVERRIDE_CONF: stubOverride, MANABI_BOTS_ORIGIN: "https://127.0.0.1:18089" }, stdio: "pipe" });
   const stubDomain = readFileSync(path.join(stubOut, "bot-domain.js"), "utf8");
   assert.match(stubDomain, /export const botsOrigin = "https:\/\/127\.0\.0\.1:18089";/u);
   const stubHtml = readFileSync(path.join(stubOut, "index.html"), "utf8");
@@ -128,6 +134,8 @@ test("only the two declared GET routes are allowed; CSP equals the runtime deriv
   assert.doesNotMatch(stubHtml, /bots\.itonami\.cloud/u);
   const stubDesc = JSON.parse(readFileSync(path.join(stubOut, "descriptor.json"), "utf8"));
   assert.ok(stubDesc.operations.every((o) => o.endpoint.origin === "https://127.0.0.1:18089"));
+  const stubNativeConf = JSON.parse(readFileSync(stubOverride, "utf8"));
+  assert.match(stubNativeConf.app.security.csp, /connect-src 'self' https:\/\/127\.0\.0\.1:18089 ipc: http:\/\/ipc\.localhost;/u);
 });
 
 test("ZB12-011: health checkpoint-stale exact 2x intervalMs boundary and negative/future timestamps", () => {

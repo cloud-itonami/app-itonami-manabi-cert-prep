@@ -46,8 +46,9 @@ const strip = (html) => html.replace(/<script\b[^>]*>[\s\S]*?<\/script>/giu, "")
 const bodyOf = (html) => /<body[^>]*>([\s\S]*)<\/body>/iu.exec(html)[1];
 
 test("the real build is one document that keeps every page's text, with unique ids and no dead links", () => {
-  const out = path.join(mkdtempSync(path.join(tmpdir(), "tauri-spa-")), "dist");
-  execFileSync(process.execPath, [path.join(here, "scripts/build.mjs")], { env: { ...process.env, TAURI_DIST: out }, stdio: "pipe" });
+  const outDir = mkdtempSync(path.join(tmpdir(), "tauri-spa-"));
+  const out = path.join(outDir, "dist");
+  execFileSync(process.execPath, [path.join(here, "scripts/build.mjs")], { env: { ...process.env, TAURI_DIST: out, TAURI_OVERRIDE_CONF: path.join(outDir, ".build/tauri.override.conf.json") }, stdio: "pipe" });
   const html = readdirSync(out, { recursive: true }).filter((f) => String(f).endsWith(".html"));
   assert.deepEqual(html, ["index.html"]);
   const doc = readFileSync(path.join(out, "index.html"), "utf8");

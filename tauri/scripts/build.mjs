@@ -7,10 +7,18 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { descriptor, requestedCapabilities } from "../src/descriptor.mjs";
 import { clientRuntimeConnectSrc, clientRuntimeProblems } from "../vendor/kotoba-client-runtime.js";
+import {
+  OVERRIDE_CONF_REL,
+  buildNativeCspFromMeta,
+  nativeCspParityProblems,
+  validateBotsOriginOverride,
+} from "./bots-origin.mjs";
 
 const here = fileURLToPath(new URL("../", import.meta.url));
 const source = path.resolve(process.env.STATIC_SRC ?? path.join(here, "../public"));
 const out = path.resolve(process.env.TAURI_DIST ?? path.join(here, "dist"));
+const confPath = path.resolve(process.env.TAURI_CONF ?? path.join(here, "src-tauri/tauri.conf.json"));
+const overrideConfPath = path.resolve(process.env.TAURI_OVERRIDE_CONF ?? path.join(here, OVERRIDE_CONF_REL));
 const sha = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const fail = (message) => { console.error(`tauri build: ${message}`); process.exit(1); };
 
@@ -20,14 +28,17 @@ for (const [name, digest] of Object.entries(pins.files)) {
 }
 try { await stat(path.join(source, "index.html")); } catch { fail(`${path.join(source, "index.html")} is missing`); }
 
-// Build-time origin override for local/dev testing only. Production default
-// (committed in src/bot-domain.mjs) is https://bots.itonami.cloud; tests set
-// MANABI_BOTS_ORIGIN=https://127.0.0.1:PORT to point the bundled page at a local
-// stub. The override is applied to the descriptor (CSP + descriptor.json) and
-// patched into the copied dist files below; the source is never rewritten.
-const botsOriginOverride = (process.env.MANABI_BOTS_ORIGIN ?? "").trim().replace(/\/+$/u, "");
+// Build-time origin override for local/dev stub testing only (TAURI-CSP-02).
+// Committed source & tauri.conf.json always keep production https://bots.itonami.cloud.
+let botsOriginOverride = null;
+try {
+  botsOriginOverride = validateBotsOriginOverride(process.env.MANABI_BOTS_ORIGIN, {
+    allowEmulatorHost: process.env.MANABI_BOTS_ALLOW_EMULATOR_HOST === "1",
+  });
+} catch (err) {
+  fail(err.message);
+}
 if (botsOriginOverride) {
-  try { new URL(botsOriginOverride); } catch { fail(`MANABI_BOTS_ORIGIN is not a URL: ${botsOriginOverride}`); }
   for (const op of descriptor.operations) op.endpoint.origin = botsOriginOverride;
 }
 
@@ -37,20 +48,15 @@ if (problems.length) fail(`descriptor is invalid: ${JSON.stringify(problems)}`);
 const connect = clientRuntimeConnectSrc(descriptor, capabilities, [], ["https://tauri.localhost"]);
 const expectedConnectSrc = `${connect === "connect-src 'none'" ? "connect-src 'self'" : connect.replace("connect-src ", "connect-src 'self' ")} ipc: http://ipc.localhost`;
 
-// Keep tauri.conf.json's native shell CSP aligned with the descriptor in production builds
-// (local stub overrides via MANABI_BOTS_ORIGIN must also pass a matching Tauri --config override).
-if (!botsOriginOverride) {
-  const confPath = path.resolve(process.env.TAURI_CONF ?? path.join(here, "src-tauri/tauri.conf.json"));
-  const tauriConf = JSON.parse(await readFile(confPath, "utf8"));
-  const confCsp = tauriConf?.app?.security?.csp;
-  if (typeof confCsp !== "string" || confCsp.trim() === "") {
-    fail("src-tauri/tauri.conf.json must declare a non-null descriptor-derived app.security.csp");
-  }
-  const directives = confCsp.split(";").map((part) => part.trim()).filter(Boolean);
-  const confConnectSrc = directives.find((part) => part.startsWith("connect-src "));
-  if (confConnectSrc !== expectedConnectSrc) {
-    fail(`src-tauri/tauri.conf.json connect-src (${confConnectSrc ?? "missing"}) disagrees with descriptor (${expectedConnectSrc})`);
-  }
+// Always verify base tauri.conf.json carries a non-null CSP (never allow silent csp: null).
+let baseTauriConf;
+try {
+  baseTauriConf = JSON.parse(await readFile(confPath, "utf8"));
+} catch {
+  fail(`unable to read Tauri config: ${confPath}`);
+}
+if (typeof baseTauriConf?.app?.security?.csp !== "string" || baseTauriConf.app.security.csp.trim() === "") {
+  fail("src-tauri/tauri.conf.json must declare a non-null descriptor-derived app.security.csp");
 }
 
 await rm(out, { recursive: true, force: true });
@@ -59,22 +65,24 @@ await cp(source, out, { recursive: true });
 await cp(path.join(here, "vendor/kotoba-client-runtime.js"), path.join(out, "runtime.js"));
 await cp(path.join(here, "vendor/kotoba-client-consent.css"), path.join(out, "runtime-consent.css"));
 await cp(path.join(here, "src/host.js"), path.join(out, "host.js"));
-// Bot status page (Tauri host only): the page, its pure domain and the bundled
-// profile. The page reaches bots.itonami.cloud only through host.js and the broker.
+await cp(path.join(here, "src/bot-domain.mjs"), path.join(out, "bot-domain.js"));
+if (botsOriginOverride) {
+  // Patch the copied dist file only; the committed source keeps the prod origin.
+  const domainJs = await readFile(path.join(out, "bot-domain.js"), "utf8");
+  if (!domainJs.includes('export const botsOrigin = "https://bots.itonami.cloud";')) {
+    fail("bot-domain.js does not carry the production botsOrigin constant");
+  }
+  await writeFile(path.join(out, "bot-domain.js"),
+    domainJs.replace('export const botsOrigin = "https://bots.itonami.cloud";',
+      `export const botsOrigin = ${JSON.stringify(botsOriginOverride)};`));
+}
+// Bot status page (Tauri host only): the page and the bundled profile.
+// The page reaches bots.itonami.cloud only through host.js and the broker.
 const botPage = process.env.BOT_PAGE !== "0";
 if (botPage) {
   await cp(path.join(here, "src/bot/bot.html"), path.join(out, "bot.html"));
   await cp(path.join(here, "src/bot/bot.js"), path.join(out, "bot.js"));
-  await cp(path.join(here, "src/bot-domain.mjs"), path.join(out, "bot-domain.js"));
   if (botsOriginOverride) {
-    // Patch the copied dist files only; the committed source keeps the prod origin.
-    const domainJs = await readFile(path.join(out, "bot-domain.js"), "utf8");
-    if (!domainJs.includes('export const botsOrigin = "https://bots.itonami.cloud";')) {
-      fail("bot-domain.js does not carry the production botsOrigin constant");
-    }
-    await writeFile(path.join(out, "bot-domain.js"),
-      domainJs.replace('export const botsOrigin = "https://bots.itonami.cloud";',
-        `export const botsOrigin = ${JSON.stringify(botsOriginOverride)};`));
     const botHtml = await readFile(path.join(out, "bot.html"), "utf8");
     await writeFile(path.join(out, "bot.html"),
       botHtml.replaceAll("https://bots.itonami.cloud", botsOriginOverride));
@@ -142,6 +150,7 @@ const walk = async (dir, collect) => {
   }
 };
 await walk("", (rel) => { if (rel.endsWith(".html")) htmlFiles.push(rel); });
+let indexMetaCsp = null;
 for (const rel of htmlFiles) {
   let html = await readFile(path.join(out, rel), "utf8");
   if (/<meta[^>]+http-equiv=["']Content-Security-Policy/iu.test(html)) fail(`${rel} already carries a CSP; refusing to merge policies`);
@@ -153,12 +162,34 @@ for (const rel of htmlFiles) {
     ...(inlineAttrs ? ["style-src-attr 'unsafe-inline'"] : []), "img-src 'self' data:", "font-src 'self'",
     expectedConnectSrc,
     "object-src 'none'", "frame-src 'none'", "base-uri 'none'", "form-action 'none'"].join("; ");
+  if (rel === "index.html") indexMetaCsp = csp;
   if (botPage && rel === "index.html") {
     if (!/<nav>/iu.test(html)) fail("index.html has no <nav> for the bot page link");
     html = html.replace(/<nav>/iu, '<nav>\n      <a href="/bot.html">bot</a>');
   }
   html = html.replace(/<head([^>]*)>/iu,`<head$1><meta http-equiv="Content-Security-Policy" content="${csp}"><link rel="stylesheet" href="/runtime-consent.css"><script type="module" src="/host.js"></script>`);
   await writeFile(path.join(out, rel), html);
+}
+
+// TAURI-CSP-02: write or clean the native CSP override config outside dist/,
+// then verify 100% native-vs-HTML CSP parity unconditionally (never skipped).
+if (botsOriginOverride) {
+  const overrideCsp = buildNativeCspFromMeta(indexMetaCsp);
+  await mkdir(path.dirname(overrideConfPath), { recursive: true });
+  await writeFile(overrideConfPath, JSON.stringify({ app: { security: { csp: overrideCsp } } }, null, 2) + "\n");
+} else {
+  await rm(overrideConfPath, { force: true });
+}
+const effectiveNativeConfPath = botsOriginOverride ? overrideConfPath : confPath;
+const effectiveNativeConf = JSON.parse(await readFile(effectiveNativeConfPath, "utf8"));
+const parityProblems = nativeCspParityProblems({
+  nativeCsp: effectiveNativeConf?.app?.security?.csp,
+  metaCsp: indexMetaCsp,
+  expectedConnectSrc,
+  strictStyleMatch: Boolean(botsOriginOverride),
+});
+if (parityProblems.length) {
+  fail(`native Tauri CSP (${effectiveNativeConfPath}) parity failure: ${parityProblems.join("; ")}`);
 }
 
 const files = {};

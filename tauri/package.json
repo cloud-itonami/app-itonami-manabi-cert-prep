@@ -7,9 +7,10 @@
     "build": "node scripts/build.mjs",
     "test": "node --test test/*.test.mjs",
     "tauri": "tauri",
-    "build:desktop": "npm run build && tauri build --no-bundle",
-    "build:android": "npm run build && tauri android build --debug --apk --target aarch64",
-    "build:android:x86": "npm run build && tauri android build --debug --apk --target x86_64"
+    "build:desktop": "node scripts/tauri-build.mjs build --no-bundle",
+    "build:desktop:debug": "node scripts/tauri-build.mjs build --debug --no-bundle",
+    "build:android": "node scripts/tauri-build.mjs android build --debug --apk --target aarch64",
+    "build:android:x86": "node scripts/tauri-build.mjs android build --debug --apk --target x86_64"
   },
   "devDependencies": {
     "@tauri-apps/cli": "3.0.0-alpha.6"
