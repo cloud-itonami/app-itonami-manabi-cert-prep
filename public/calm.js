@@ -17,15 +17,58 @@
   "use strict";
 
   const STORAGE_KEY = "manabi-cert-prep:sessions:v1";
+  // Must stay aligned with tauri/src/descriptor.mjs local-state.{schema,version}.
+  const LOCAL_STATE_SCHEMA = "manabi-cert-prep.sessions.v1";
+  const LOCAL_STATE_VERSION = 1;
   // Keep the device-local cap small; this is W1 scratch storage, not authoritative
   const MAX_LOCAL_ENTRIES = 200;
+  const MAX_FIELD_LEN = 128;
+  const ALLOWED_PATHWAYS = new Set(["cisa", "cissp"]);
+  const ALLOWED_ENTRY_KEYS = new Set(["kind", "certPathway", "domain", "conceptId", "tsUtc"]);
+
+  function sanitizeSessionEntry(entry) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return null;
+    const keys = Object.keys(entry);
+    if (keys.length !== ALLOWED_ENTRY_KEYS.size || !keys.every(function (k) { return ALLOWED_ENTRY_KEYS.has(k); })) {
+      return null;
+    }
+    if (entry.kind !== "concept_touched") return null;
+    if (typeof entry.certPathway !== "string" || !ALLOWED_PATHWAYS.has(entry.certPathway)) return null;
+    if (typeof entry.domain !== "string" || entry.domain.trim() === "" || entry.domain.length > MAX_FIELD_LEN) return null;
+    if (typeof entry.conceptId !== "string" || entry.conceptId.trim() === "" || entry.conceptId.length > MAX_FIELD_LEN) return null;
+    if (typeof entry.tsUtc !== "string" || entry.tsUtc.length > 64 || !Number.isFinite(Date.parse(entry.tsUtc))) return null;
+    return {
+      kind: "concept_touched",
+      certPathway: entry.certPathway,
+      domain: entry.domain,
+      conceptId: entry.conceptId,
+      tsUtc: entry.tsUtc,
+    };
+  }
 
   function loadSessions() {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (!raw) return [];
       const parsed = JSON.parse(raw);
-      return Array.isArray(parsed) ? parsed : [];
+      let entries = null;
+      if (Array.isArray(parsed)) {
+        // Legacy W1 flat array format — migrate to validated entries.
+        entries = parsed;
+      } else if (parsed && typeof parsed === "object") {
+        if (parsed.schema !== LOCAL_STATE_SCHEMA || parsed.version !== LOCAL_STATE_VERSION || !Array.isArray(parsed.entries)) {
+          return [];
+        }
+        entries = parsed.entries;
+      } else {
+        return [];
+      }
+      const valid = [];
+      for (const item of entries) {
+        const clean = sanitizeSessionEntry(item);
+        if (clean) valid.push(clean);
+      }
+      return valid.slice(-MAX_LOCAL_ENTRIES);
     } catch (_e) {
       return [];
     }
@@ -33,8 +76,20 @@
 
   function saveSessions(sessions) {
     try {
-      const trimmed = sessions.slice(-MAX_LOCAL_ENTRIES);
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(trimmed));
+      const valid = [];
+      for (const item of sessions) {
+        const clean = sanitizeSessionEntry(item);
+        if (clean) valid.push(clean);
+      }
+      const trimmed = valid.slice(-MAX_LOCAL_ENTRIES);
+      localStorage.setItem(
+        STORAGE_KEY,
+        JSON.stringify({
+          schema: LOCAL_STATE_SCHEMA,
+          version: LOCAL_STATE_VERSION,
+          entries: trimmed,
+        }),
+      );
     } catch (_e) {
       // localStorage may be unavailable (private mode); fail silently per G3 (no nag UI)
     }
@@ -45,33 +100,41 @@
   //   domain: string (e.g. "cisa-d2" or "cissp-d3")
   //   conceptId: string (free-form section anchor)
   //
-  // DELIBERATELY missing fields (G15 + G16 + G3):
+  // DELIBERATELY missing fields (G15 + G16 + G3) and R2 boundary (personalMaterialImport
+  // is R2-gated and must never be stored in W1 localStorage):
   //   - no "score"
   //   - no "correct/incorrect"
   //   - no "time-on-question"
   //   - no "rank"
   //   - no "streak-day"
+  //   - no personal-material import / user-imported-personal-only payload
   function recordConceptTouched(certPathway, domain, conceptId) {
-    const sessions = loadSessions();
-    sessions.push({
+    const candidate = sanitizeSessionEntry({
       kind: "concept_touched",
       certPathway: certPathway,
       domain: domain,
       conceptId: conceptId,
       tsUtc: new Date().toISOString(),
     });
+    if (!candidate) return false;
+    const sessions = loadSessions();
+    sessions.push(candidate);
     saveSessions(sessions);
+    return true;
   }
 
   function renderHistory(rootEl) {
     if (!rootEl) return;
     const sessions = loadSessions();
     if (sessions.length === 0) {
-      rootEl.innerHTML =
-        '<p class="calm-list-meta">まだ学習履歴はありません。Domain を選び、概念を読むと、この一覧に記録されていきます。</p>';
+      const empty = document.createElement("p");
+      empty.className = "calm-list-meta";
+      empty.textContent = "まだ学習履歴はありません。Domain を選び、概念を読むと、この一覧に記録されていきます。";
+      rootEl.replaceChildren(empty);
       return;
     }
-    // Reverse-chronological flat list — DELIBERATELY no chart, no progress bar
+    // Reverse-chronological flat list — DELIBERATELY no chart, no progress bar.
+    // All text is set via textContent only (no innerHTML).
     const ul = document.createElement("ul");
     ul.className = "calm-list";
     const reversed = sessions.slice().reverse();
@@ -80,21 +143,17 @@
       const t = new Date(s.tsUtc);
       const dateStr = t.toLocaleString();
       const certLabel = s.certPathway === "cisa" ? "CISA" : "CISSP";
-      li.innerHTML =
-        '<div class="calm-list-domain">' +
-        escapeHtml(certLabel) +
-        " · " +
-        escapeHtml(s.domain) +
-        "</div>" +
-        '<div class="calm-list-meta">' +
-        escapeHtml(dateStr) +
-        " · concept: " +
-        escapeHtml(s.conceptId) +
-        "</div>";
+      const domainDiv = document.createElement("div");
+      domainDiv.className = "calm-list-domain";
+      domainDiv.textContent = certLabel + " · " + s.domain;
+      const metaDiv = document.createElement("div");
+      metaDiv.className = "calm-list-meta";
+      metaDiv.textContent = dateStr + " · concept: " + s.conceptId;
+      li.appendChild(domainDiv);
+      li.appendChild(metaDiv);
       ul.appendChild(li);
     }
-    rootEl.innerHTML = "";
-    rootEl.appendChild(ul);
+    rootEl.replaceChildren(ul);
   }
 
   function clearHistory() {
@@ -103,14 +162,6 @@
     } catch (_e) {
       /* ignore */
     }
-  }
-
-  function escapeHtml(s) {
-    return String(s).replace(/[&<>"']/g, function (c) {
-      return (
-        { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c] || c
-      );
-    });
   }
 
   // Wire concept-section "次へ" buttons on study pages

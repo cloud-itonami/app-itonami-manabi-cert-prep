@@ -14,14 +14,7 @@ const reasonText = {
 const verdictText = { healthy: "健康", unhealthy: "不健康", unknown: "不明（活動を未取得）" };
 const timeText = (ms) => (ms == null ? "なし" : new Intl.DateTimeFormat("ja", { dateStyle: "medium", timeStyle: "short" }).format(new Date(ms)));
 
-const boundedJson = async (response) => {
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
-  const declared = Number(response.headers.get("content-length"));
-  if (Number.isFinite(declared) && declared > d.maxResponseBytes) throw new Error("response too large");
-  const text = await response.text();
-  if (text.length > d.maxResponseBytes) throw new Error("response too large");
-  return JSON.parse(text);
-};
+const boundedJson = (response) => d.readBoundedJson(response, d.maxResponseBytes);
 
 const notice = (s) => { $("notice").textContent = s; };
 

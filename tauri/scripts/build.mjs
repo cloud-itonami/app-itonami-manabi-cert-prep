@@ -35,6 +35,23 @@ const capabilities = requestedCapabilities(descriptor);
 const problems = clientRuntimeProblems(descriptor, capabilities, ["https://tauri.localhost"]);
 if (problems.length) fail(`descriptor is invalid: ${JSON.stringify(problems)}`);
 const connect = clientRuntimeConnectSrc(descriptor, capabilities, [], ["https://tauri.localhost"]);
+const expectedConnectSrc = `${connect === "connect-src 'none'" ? "connect-src 'self'" : connect.replace("connect-src ", "connect-src 'self' ")} ipc: http://ipc.localhost`;
+
+// Keep tauri.conf.json's native shell CSP aligned with the descriptor in production builds
+// (local stub overrides via MANABI_BOTS_ORIGIN must also pass a matching Tauri --config override).
+if (!botsOriginOverride) {
+  const confPath = path.resolve(process.env.TAURI_CONF ?? path.join(here, "src-tauri/tauri.conf.json"));
+  const tauriConf = JSON.parse(await readFile(confPath, "utf8"));
+  const confCsp = tauriConf?.app?.security?.csp;
+  if (typeof confCsp !== "string" || confCsp.trim() === "") {
+    fail("src-tauri/tauri.conf.json must declare a non-null descriptor-derived app.security.csp");
+  }
+  const directives = confCsp.split(";").map((part) => part.trim()).filter(Boolean);
+  const confConnectSrc = directives.find((part) => part.startsWith("connect-src "));
+  if (confConnectSrc !== expectedConnectSrc) {
+    fail(`src-tauri/tauri.conf.json connect-src (${confConnectSrc ?? "missing"}) disagrees with descriptor (${expectedConnectSrc})`);
+  }
+}
 
 await rm(out, { recursive: true, force: true });
 await mkdir(out, { recursive: true });
@@ -134,7 +151,7 @@ for (const rel of htmlFiles) {
   const inlineAttrs = /\sstyle=/iu.test(html);
   const csp = ["default-src 'none'", "script-src 'self'", `style-src 'self' ${hashes.join(" ")}`.trim(),
     ...(inlineAttrs ? ["style-src-attr 'unsafe-inline'"] : []), "img-src 'self' data:", "font-src 'self'",
-    `${connect === "connect-src 'none'" ? "connect-src 'self'" : connect.replace("connect-src ", "connect-src 'self' ")} ipc: http://ipc.localhost`,
+    expectedConnectSrc,
     "object-src 'none'", "frame-src 'none'", "base-uri 'none'", "form-action 'none'"].join("; ");
   if (botPage && rel === "index.html") {
     if (!/<nav>/iu.test(html)) fail("index.html has no <nav> for the bot page link");

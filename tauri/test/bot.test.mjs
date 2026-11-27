@@ -129,3 +129,206 @@ test("only the two declared GET routes are allowed; CSP equals the runtime deriv
   const stubDesc = JSON.parse(readFileSync(path.join(stubOut, "descriptor.json"), "utf8"));
   assert.ok(stubDesc.operations.every((o) => o.endpoint.origin === "https://127.0.0.1:18089"));
 });
+
+test("ZB12-011: health checkpoint-stale exact 2x intervalMs boundary and negative/future timestamps", () => {
+  const now = Date.parse("2026-11-18T12:00:00Z");
+  const interval = 3_600_000;
+  const okEvent = [{ at: now - 1000, error: null }];
+  const makeRunning = (cp) => d.assignment(launchedList({ status: "running", last_checkpoint_at: cp, interval_ms: interval }));
+
+  // Exact 2x intervalMs boundaries
+  assert.equal(d.health(makeRunning(now), okEvent, now).verdict, "healthy", "elapsed === 0");
+  assert.equal(d.health(makeRunning(now - (2 * interval - 1)), okEvent, now).verdict, "healthy", "elapsed === 2*interval - 1");
+  assert.equal(d.health(makeRunning(now - 2 * interval), okEvent, now).verdict, "healthy", "elapsed === 2*interval");
+  const over = d.health(makeRunning(now - (2 * interval + 1)), okEvent, now);
+  assert.equal(over.verdict, "unhealthy", "elapsed === 2*interval + 1");
+  assert.deepEqual(over.reasons, ["checkpoint-stale"]);
+
+  // assignment() refuses negative and non-integer timestamps
+  for (const badCp of [-1, -3_600_000, Number.NaN, Number.POSITIVE_INFINITY, 1.5]) {
+    assert.equal(reason(() => d.assignment(launchedList({ last_checkpoint_at: badCp }))), "assignment-bot-shape", String(badCp));
+  }
+
+  // health() fails closed on negative, future (negative elapsed), or non-finite timestamps
+  const base = makeRunning(now - 60_000);
+  for (const [label, a, t] of [
+    ["negative checkpoint", { ...base, lastCheckpointAt: -1 }, now],
+    ["negative nowMs", base, -1],
+    ["both negative small diff", { ...base, lastCheckpointAt: -100 }, -50],
+    ["future checkpoint (+1ms)", { ...base, lastCheckpointAt: now + 1 }, now],
+    ["far-future checkpoint", { ...base, lastCheckpointAt: Number.MAX_SAFE_INTEGER }, now],
+    ["NaN nowMs", base, Number.NaN],
+    ["Infinity nowMs", base, Number.POSITIVE_INFINITY],
+    ["zero intervalMs", { ...base, intervalMs: 0 }, now],
+    ["negative intervalMs", { ...base, intervalMs: -1000 }, now],
+  ]) {
+    const h = d.health(a, okEvent, t);
+    assert.equal(h.verdict, "unhealthy", label);
+    assert.ok(h.reasons.includes("checkpoint-stale"), `${label}: ${JSON.stringify(h.reasons)}`);
+  }
+});
+
+test("ZB12-012: bot-domain rejects >128-char, dot-segment, unicode, and confusable-origin bot IDs", () => {
+  const allowed = (url, method = "GET") => descriptor.operations.some((o) => clientEndpointAllowsRequest(o.endpoint, url, method));
+  const maxValid = "a".repeat(128);
+  assert.equal(d.safeId(maxValid), true);
+  assert.equal(d.activityUrl(maxValid), `${d.botsOrigin}${d.activityPrefix}${maxValid}/activity`);
+  assert.equal(allowed(d.activityUrl(maxValid)), true);
+
+  const rejectedIds = [
+    ["empty", ""],
+    ["129 chars", "a".repeat(129)],
+    ["200 chars", "b".repeat(200)],
+    ["single dot", "."],
+    ["double dot", ".."],
+    ["dot prefix", ".hidden"],
+    ["embedded double dot", "bot..1"],
+    ["trailing double dot", "bot.."],
+    ["path traversal", "../businesses"],
+    ["nested traversal", "bot-1/../../businesses"],
+    ["dot segment slash", "./bot-1"],
+    ["percent encoded dot", "%2e%2e"],
+    ["percent encoded slash", "bot%2f1"],
+    ["backslash", "bot\\1"],
+    ["unicode Japanese", "ボット-1"],
+    ["unicode Cyrillic homoglyph", "b\u043et-1"],
+    ["unicode fullwidth", "\uff42\uff4f\uff54"],
+    ["zero-width space", "bot\u200b1"],
+    ["RTL override", "bot\u202e1"],
+    ["combining mark", "bot\u0301"],
+    ["emoji", "bot🔥"],
+    ["nul byte", "bot\0id"],
+    ["whitespace", "bot 1"],
+    ["query injection", "bot-1?x=1"],
+    ["fragment injection", "bot-1#frag"],
+    ["proto pollution __proto__", "__proto__"],
+    ["proto pollution constructor", "constructor"],
+    ["proto pollution prototype", "prototype"],
+  ];
+  for (const [label, id] of rejectedIds) {
+    assert.equal(d.safeId(id), false, `safeId(${label})`);
+    assert.equal(reason(() => d.activityUrl(id)), "unsafe-bot-id", `activityUrl(${label})`);
+    assert.equal(reason(() => d.activity(feed7310, id)), "unsafe-bot-id", `activity(${label})`);
+    assert.equal(reason(() => d.assignment(launchedList({ bot_id: id }))), "assignment-bot-shape", `assignment(${label})`);
+  }
+
+  // Route-level checks: >128-char, extra path segments, and confusable origins are rejected by the descriptor endpoint
+  for (const [label, url] of [
+    ["129-char bot_id", `${d.botsOrigin}${d.activityPrefix}${"a".repeat(129)}/activity`],
+    ["200-char bot_id", `${d.botsOrigin}${d.activityPrefix}${"a".repeat(200)}/activity`],
+    ["wrong suffix under prefix", `${d.botsOrigin}${d.activityPrefix}business-8569-x/other`],
+    ["extra nested segment", `${d.botsOrigin}${d.activityPrefix}a/b/activity`],
+    ["dot-leading bot_id", `${d.botsOrigin}${d.activityPrefix}.hidden/activity`],
+    ["unicode bot_id", `${d.botsOrigin}${d.activityPrefix}ボット/activity`],
+    ["Cyrillic confusable origin", "https://b\u043ets.itonami.cloud/v1/grok-bots/businesses"],
+    ["suffix spoof origin", "https://bots.itonami.cloud.evil.example/v1/grok-bots/businesses"],
+    ["prefix spoof origin", "https://evil-bots.itonami.cloud/v1/grok-bots/businesses"],
+    ["userinfo spoof origin", "https://bots.itonami.cloud@evil.example/v1/grok-bots/businesses"],
+    ["credentials on real origin", "https://user:pass@bots.itonami.cloud/v1/grok-bots/businesses"],
+    ["scheme downgrade", "http://bots.itonami.cloud/v1/grok-bots/businesses"],
+    ["port confusion", "https://bots.itonami.cloud:8443/v1/grok-bots/businesses"],
+  ]) {
+    assert.equal(allowed(url, "GET"), false, `endpoint must reject ${label}`);
+  }
+});
+
+test("ZB12-013: maxResponseBytes streaming byte-cap and maxEvents/500-row bounds", async () => {
+  // Exact maxResponseBytes boundary (262144 accepted, 262145 rejected)
+  const makeJsonOfBytes = (targetBytes) => {
+    const prefix = '{"v":"';
+    const suffix = '"}';
+    return prefix + "a".repeat(targetBytes - prefix.length - suffix.length) + suffix;
+  };
+  const exactPayload = makeJsonOfBytes(d.maxResponseBytes);
+  assert.equal(Buffer.byteLength(exactPayload, "utf8"), d.maxResponseBytes);
+  const exactRes = new Response(exactPayload, { status: 200, headers: { "content-length": String(d.maxResponseBytes) } });
+  assert.equal((await d.readBoundedJson(exactRes)).v.length, d.maxResponseBytes - 8);
+
+  const overPayload = makeJsonOfBytes(d.maxResponseBytes + 1);
+  assert.equal(Buffer.byteLength(overPayload, "utf8"), d.maxResponseBytes + 1);
+  await assert.rejects(() => d.readBoundedJson(new Response(overPayload, { status: 200 })), /response too large/u);
+
+  // Multi-byte UTF-8: text.length < maxResponseBytes (100,000 chars), but UTF-8 byteLength = 300,008 > 262,144
+  const multiBytePayload = JSON.stringify({ v: "あ".repeat(100_000) });
+  assert.ok(multiBytePayload.length < d.maxResponseBytes);
+  assert.ok(Buffer.byteLength(multiBytePayload, "utf8") > d.maxResponseBytes);
+  await assert.rejects(() => d.readBoundedJson(new Response(multiBytePayload, { status: 200 })), /response too large/u);
+  // Also test fallback path (no response.body stream) with multi-byte UTF-8
+  await assert.rejects(() => d.readBoundedJson({
+    ok: true,
+    status: 200,
+    headers: new Headers(),
+    body: null,
+    text: async () => multiBytePayload,
+  }), /response too large/u);
+
+  // Declared Content-Length > maxResponseBytes or negative rejects before reading body
+  let cancelledDeclared = false;
+  await assert.rejects(() => d.readBoundedJson({
+    ok: true,
+    status: 200,
+    headers: new Headers({ "content-length": String(d.maxResponseBytes + 1) }),
+    body: { cancel: async () => { cancelledDeclared = true; }, getReader: () => { throw new Error("must not read"); } },
+  }), /response too large/u);
+  assert.equal(cancelledDeclared, true);
+
+  await assert.rejects(() => d.readBoundedJson({
+    ok: true,
+    status: 200,
+    headers: new Headers({ "content-length": "-1" }),
+    body: { cancel: async () => {}, getReader: () => { throw new Error("must not read"); } },
+  }), /response too large/u);
+
+  // Chunked stream with spoofed small Content-Length cancels immediately once byte cap is crossed
+  let pulls = 0;
+  let cancelledStream = false;
+  const chunk = new Uint8Array(100_000).fill(97);
+  const hugeStream = new ReadableStream({
+    pull(controller) {
+      pulls += 1;
+      controller.enqueue(chunk);
+    },
+    cancel() {
+      cancelledStream = true;
+    },
+  });
+  await assert.rejects(() => d.readBoundedJson({
+    ok: true,
+    status: 200,
+    headers: new Headers({ "content-length": "10" }),
+    body: hugeStream,
+  }), /response too large/u);
+  assert.equal(cancelledStream, true);
+  assert.ok(pulls <= 4, `expected early abort, got ${pulls} pulls`);
+
+  // Non-OK status fails closed
+  await assert.rejects(() => d.readBoundedJson(new Response("{}", { status: 500 })), /HTTP 500/u);
+
+  // maxEvents (20) newest-first selection & 500-item feed cap
+  const baseEvent = clone(feed7310.data[0]);
+  const makeFeed = (count) => ({
+    ...clone(feed7310),
+    data: Array.from({ length: count }, (_, i) => ({
+      ...clone(baseEvent),
+      activity_id: `act-${i}`,
+      occurred_at: new Date(Date.UTC(2026, 10, 1, 0, 0, i)).toISOString(),
+    })),
+  });
+  assert.equal(d.activity(makeFeed(19), feed7310.bot_id).length, 19);
+  assert.equal(d.activity(makeFeed(20), feed7310.bot_id).length, 20);
+  const from500 = d.activity(makeFeed(500), feed7310.bot_id);
+  assert.equal(from500.length, d.maxEvents);
+  assert.equal(from500[0].id, "act-499");
+  assert.equal(from500[19].id, "act-480");
+  assert.equal(reason(() => d.activity(makeFeed(501), feed7310.bot_id)), "activity-feed-shape");
+
+  // Tampered event past index maxEvents must still fail closed
+  const badLate = makeFeed(30);
+  badLate.data[25].integrity.digest = "not-a-sha256";
+  assert.equal(reason(() => d.activity(badLate, feed7310.bot_id)), "activity-event-shape");
+
+  // Assignment list 500-row cap
+  const row = clone(businesses.data[0]);
+  assert.equal(d.assignment({ object: "list", data: Array.from({ length: 500 }, () => clone(row)) }).state, "not-launched");
+  assert.equal(reason(() => d.assignment({ object: "list", data: Array.from({ length: 501 }, () => clone(row)) })), "assignment-list-shape");
+});

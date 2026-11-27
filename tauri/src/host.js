@@ -22,10 +22,31 @@ const broker = createClientOperationBroker({
 });
 
 const appFetch = globalThis.fetch.bind(globalThis);
+const hasRawTraversal = (rawUrl) => {
+  const pathPart = rawUrl
+    .replace(/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\/[^/?#]*/u, "")
+    .replace(/^\/\/[^/?#]*/u, "")
+    .split(/[?#]/u)[0];
+  return /(?:^|\/)\.\.?(?:\/|$)/u.test(pathPart)
+    || pathPart.includes("\\")
+    || /%2e|%2f|%5c/iu.test(pathPart);
+};
 globalThis.fetch = function guardedFetch(input, init) {
-  const url = new URL(input instanceof Request ? input.url : String(input), location.href);
+  const rawUrl = input instanceof Request ? input.url : String(input);
+  let url;
+  try {
+    url = new URL(rawUrl, location.href);
+  } catch {
+    return Promise.reject(new TypeError("不正な URL のため送信しません。"));
+  }
+  if (url.username || url.password) {
+    return Promise.reject(new TypeError("認証情報を含む URL は送信しません。"));
+  }
   const method = String(init?.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
   if (url.origin === location.origin) return appFetch(input, init);
+  if (hasRawTraversal(rawUrl)) {
+    return Promise.reject(new TypeError("パス正規化やトラバーサルを含む接続先は送信しません。"));
+  }
   const operation = descriptor.operations.find((op) => clientEndpointAllowsRequest(op.endpoint, url.href, method));
   if (!operation) return Promise.reject(new TypeError("この接続先・操作は宣言されていないため送信しません。"));
   const selector = { capability: operation.capability, service: operation.service, operation: operation.operation };
@@ -37,6 +58,12 @@ globalThis.fetch = function guardedFetch(input, init) {
 document.addEventListener("click", (event) => {
   const anchor = event.target?.closest?.("a[href]");
   if (!anchor) return;
-  const target = new URL(anchor.getAttribute("href"), location.href);
+  let target;
+  try {
+    target = new URL(anchor.getAttribute("href"), location.href);
+  } catch {
+    event.preventDefault();
+    return;
+  }
   if (target.origin !== location.origin) event.preventDefault();
 }, true);
